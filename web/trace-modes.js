@@ -269,3 +269,32 @@ export function vectorizeCenterline(rgba,w,h,simplify=0.5){
     warning:open?'Les lignes ouvertes conviennent à la gravure, mais pas à une découpe de formes fermées.':''
   };
 }
+
+
+// Troisième mode : trace les deux bords de chaque bande d'encre.
+// En suivant les surfaces noires, on obtient à la fois le contour extérieur
+// et le contour intérieur du trait épais (ainsi que d'éventuels trous).
+export function vectorizeDoubleContours(rgba,w,h,simplify=0.5){
+  if(w<3||h<3)throw Error('Image trop petite.');
+  const black=toBinaryMask(rgba,w,h);
+  const minArea=Math.max(18,Math.round(w*h*0.00002));
+  const regions=findBlackShapes(black,w,h,minArea);
+  if(!regions.length)throw Error('Aucun trait noir exploitable après nettoyage.');
+  const regionMask=new Uint8Array(w*h),paths=[];
+  let loopsCount=0;
+  for(const region of regions){
+    // Conserver toutes les boucles des composantes noires : contrairement au
+    // mode découpe, on ne supprime PAS le bord intérieur des traits.
+    for(const loop of regionContours(region,w,h,regionMask)){
+      const pts=simplifyClosed(loop,Math.max(0,Number(simplify)*2.5));
+      if(pts.length<3)continue;
+      const d=pathD(pts,true);
+      if(d){paths.push(`<path d="${d}"/>`);loopsCount++;}
+    }
+  }
+  if(!paths.length)throw Error('Aucun contour double détecté.');
+  return {
+    svg:makeSvg(paths,w,h),paths:loopsCount,closed:loopsCount,open:0,
+    warning:'Les deux côtés des traits sont vectorisés : attention aux doubles passages du laser en mode découpe.'
+  };
+}

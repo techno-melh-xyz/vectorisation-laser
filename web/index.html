@@ -2,11 +2,11 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vectorisation Laser V9 — Découpe et gravure</title>
-<link rel="stylesheet" href="style.css?v=9">
+<title>Vectorisation Laser V10 — Découpe, gravure et édition</title>
+<link rel="stylesheet" href="style.css?v=10">
 </head>
 <body>
-<header><div class="wrap"><h1>Vectorisation Laser <small class="version">V9</small></h1><p>Transformer un dessin en SVG pour la découpe (contours fermés) ou la gravure (ligne centrale)</p></div></header>
+<header><div class="wrap"><h1>Vectorisation Laser <small class="version">V10</small></h1><p>Transformer un dessin en SVG : contours fermés, deux bords du trait ou ligne centrale, puis modifier les courbes de Bézier</p></div></header>
 <main class="wrap">
 <section class="panel controls">
 <label class="upload">Choisir une image PNG, JPG ou WebP <input id="file" type="file" accept="image/png,image/jpeg,image/webp"></label>
@@ -16,6 +16,7 @@
   <legend>Mode de vectorisation laser</legend>
   <div class="trace-mode-grid">
     <label class="trace-mode-card"><input name="traceMode" type="radio" value="cut" checked><span><strong>Contours fermés — Découpe</strong><small>Suit les formes délimitées par les traits noirs. Exporte uniquement des chemins fermés (Z).</small></span></label>
+    <label class="trace-mode-card"><input name="traceMode" type="radio" value="double"><span><strong>Deux bords du trait — Vectorisation classique</strong><small>Vectorise séparément les deux côtés des traits épais, intérieur et extérieur. Adapté aux motifs noirs.</small></span></label>
     <label class="trace-mode-card"><input name="traceMode" type="radio" value="engrave"><span><strong>Ligne centrale — Gravure</strong><small>Suit le milieu des traits pour éviter les doubles lignes. Conserve les chemins ouverts.</small></span></label>
   </div>
   <p id="modeInfo" class="hint">Découpe : détecte les surfaces entourées de traits fermés. Vérifiez le résultat avant de découper.</p>
@@ -49,10 +50,10 @@
     <button id="openSvgPreview" class="secondary-button" type="button" disabled aria-label="Ouvrir l’aperçu vectorisé en grand">Agrandir / Zoom</button>
   </div>
   <div class="preview vector-preview" id="result"><span>Le SVG apparaîtra ici.</span></div>
-  <p class="preview-hint">Le résultat SVG s’ajuste automatiquement à cette fenêtre. « Agrandir / Zoom » permet de contrôler les courbes et les raccords.</p>
+  <p class="preview-hint">Le dessin s’ajuste automatiquement. « Agrandir / Zoom » permet aussi d’activer l’édition des points et courbes de Bézier.</p>
 </section>
 </div>
-<section class="panel notice"><h2>Pour la découpe laser</h2><p>Les chemins SVG du mode Découpe sont fermés, mais cela ne garantit pas que la forme physique soit correcte ou sûre. Si la photo contient un trait ouvert, le logiciel peut tracer la silhouette extérieure de l’encre : inspectez alors particulièrement les éventuels contours doubles. En mode Gravure, les traits sont amincis pour obtenir leur axe central, et peuvent rester ouverts. Vérifiez les dimensions physiques, les petits détails et les parcours dans xTool Studio ou LightBurn avant toute opération.</p><p>Les images restent sur votre appareil : aucun téléversement vers un serveur.</p></section>
+<section class="panel notice"><h2>Pour la découpe laser</h2><p>Les chemins SVG du mode Découpe sont fermés, mais cela ne garantit pas que la forme physique soit correcte ou sûre. Si la photo contient un trait ouvert, le logiciel peut tracer la silhouette extérieure de l’encre : inspectez alors particulièrement les éventuels contours doubles. En mode Deux bords du trait, les deux côtés de l’encre peuvent produire deux découpes parallèles. En mode Gravure, les traits sont amincis pour obtenir leur axe central, et peuvent rester ouverts. Vérifiez les dimensions physiques, les petits détails et les parcours dans xTool Studio ou LightBurn avant toute opération.</p><p>Les images restent sur votre appareil : aucun téléversement vers un serveur.</p></section>
 </main>
 <!-- Fenêtre native : Echap ferme l’aperçu. Les images ne quittent pas le navigateur. -->
 <dialog id="svgDialog" class="svg-dialog" aria-labelledby="svgDialogTitle">
@@ -66,10 +67,28 @@
       <output id="zoomValue" aria-live="polite">100 %</output>
       <button type="button" id="zoomIn" class="secondary-button" aria-label="Augmenter le zoom">+</button>
       <button type="button" id="fitSvg" class="secondary-button">Ajuster à la fenêtre</button>
-      <span class="svg-dialog-tip">Molette : zoom · Glisser : déplacer · Échap : fermer</span>
+      <button type="button" id="downloadEdited" class="download-dialog-button">Télécharger le SVG modifié</button>
+      <label class="editor-toggle"><input id="editSvg" type="checkbox"> Éditer les courbes</label>
+      <span class="svg-dialog-tip">Molette : zoom · Glisser le fond : déplacer · Échap : fermer</span>
+    </div>
+    <div id="editorTools" class="editor-tools" hidden>
+      <div class="editor-actions">
+        <button type="button" id="smoothSelected" class="secondary-button" disabled>Lisser le tracé</button>
+        <button type="button" id="reduceSelected" class="secondary-button" disabled>Réduire les points + lisser</button>
+        <label class="editor-intensity">Lissage <input id="smoothIntensity" type="range" min="10" max="100" value="75" step="5"> <output id="smoothIntensityValue">75 %</output></label>
+      </div>
+      <div class="editor-actions">
+        <button type="button" id="smoothNode" class="secondary-button" disabled>Lisser ce point</button>
+        <button type="button" id="cornerNode" class="secondary-button" disabled>Point d'angle</button>
+        <button type="button" id="deleteNode" class="secondary-button" disabled>Supprimer le point</button>
+        <label class="editor-linked"><input type="checkbox" id="linkHandles" checked> Poignées symétriques</label>
+        <button type="button" id="undoEdit" class="secondary-button" disabled>Annuler</button>
+        <button type="button" id="resetEdit" class="secondary-button" disabled>Rétablir l'origine</button>
+      </div>
+      <p id="editInfo" role="status" class="edit-info">Cliquez sur un tracé pour sélectionner ses points. Déplacez les points bleus et les poignées vertes. Les modifications sont enregistrées dans le SVG téléchargé.</p>
     </div>
     <div id="svgZoomStage" class="svg-zoom-stage" aria-label="Aperçu agrandi déplaçable du dessin vectorisé"></div>
   </div>
 </dialog>
-<script type="module" src="app.js?v=9"></script>
+<script type="module" src="app.js?v=10"></script>
 </body></html>

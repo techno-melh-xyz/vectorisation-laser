@@ -67,3 +67,32 @@
 .trace-mode-card small{display:block;font-size:.84rem;font-weight:400;color:#53677d;line-height:1.4;margin-top:4px}
 #traceStats{font-weight:600;color:#17629b;line-height:1.5}
 @media(max-width:650px){.trace-mode-grid{grid-template-columns:1fr}}
+
+
+/* V10 — troisième mode + édition géométrique en grand écran */
+.trace-mode-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+@media(max-width:850px){.trace-mode-grid{grid-template-columns:1fr}}
+.editor-toggle{display:flex;align-items:center;gap:7px;white-space:nowrap;font-weight:700;color:#135f95}
+.editor-toggle input{accent-color:#1363a5;width:17px;height:17px}
+.editor-tools{padding:10px 15px;background:#f4f9fd;border-bottom:1px solid #c9dbe8;flex-shrink:0}
+.editor-tools[hidden]{display:none!important}
+.editor-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:7px}
+.editor-actions button{font-size:.83rem;padding:7px 10px}
+.editor-actions button:disabled{opacity:.5;background:#e1e8ee;color:#64748b}
+.editor-intensity,.editor-linked{display:flex;align-items:center;gap:7px;font-size:.86rem;color:#284965;font-weight:600}
+.editor-intensity input{width:115px}
+.editor-intensity output{min-width:40px;font-variant-numeric:tabular-nums}
+.edit-info{font-size:.79rem;color:#3a556e;margin:4px 0;line-height:1.35}
+.svg-zoom-stage.is-editing{cursor:grab}
+.svg-zoom-stage.is-editing svg{pointer-events:auto}
+.svg-zoom-stage.is-editing .curve-editor-overlay{pointer-events:none}
+.svg-zoom-stage .curve-editor-hit{fill:none;stroke:transparent;pointer-events:stroke;cursor:pointer}
+.svg-zoom-stage .curve-editor-highlight{fill:none;stroke:#1363a5;pointer-events:none}
+.svg-zoom-stage .curve-editor-tangent{stroke:#23a164;pointer-events:none}
+.svg-zoom-stage .curve-editor-node{stroke:#1466ab;stroke-width:1;fill:#fff;pointer-events:all;cursor:move}
+.svg-zoom-stage .curve-editor-node.is-selected{fill:#1b80d8;stroke:#fff;stroke-width:1.5}
+.svg-zoom-stage .curve-editor-handle{stroke:#147543;stroke-width:1.3;fill:#baf3d2;pointer-events:all;cursor:crosshair}
+@media(max-width:650px){.svg-dialog{height:94dvh;max-height:94dvh}.editor-actions{gap:5px}.editor-intensity input{width:90px}}
+
+.download-dialog-button{background:#22794b;color:white;padding:8px 12px}
+.download-dialog-button:hover{background:#166039}

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { vectorizeCut, vectorizeCenterline, thinBinary } from '../web/trace-modes.js';
+import { vectorizeCut, vectorizeCenterline, vectorizeDoubleContours, thinBinary } from '../web/trace-modes.js';
 
 function bitmap(w,h){const b=new Uint8Array(w*h*4);for(let i=0;i<b.length;i+=4){b[i]=b[i+1]=b[i+2]=b[i+3]=255;}return b;}
 function dot(b,w,h,x,y,r=1){
@@ -44,4 +44,19 @@ test('squelettisation conserve le trait central d’une épaisse barre',()=>{
  const w=70,h=60,mask=new Uint8Array(w*h);
  for(let y=20;y<40;y++)for(let x=8;x<60;x++)mask[y*w+x]=1;
  const out=thinBinary(mask,w,h);const num=out.reduce((a,x)=>a+x,0);assert.ok(num>15&&num<120,`pixel count ${num}`);
+});
+
+
+test('deux bords: un cadre dessiné génère des boucles interne ET externe',()=>{
+ const w=180,h=150,b=bitmap(w,h);poly(b,w,h,[[25,30],[150,30],[150,120],[25,120]],true,3);
+ const result=vectorizeDoubleContours(b,w,h,.5);
+ assert.equal(result.closed,2);assert.equal(result.open,0);
+ assert.equal((result.svg.match(/<path /g)||[]).length,2);
+ assert.match(result.warning,/deux côtés/);
+});
+test('deux bords: tache pleine génère une seule boucle',()=>{
+ const w=90,h=90,b=bitmap(w,h);
+ for(let y=30;y<60;y++)for(let x=20;x<70;x++){const k=4*(y*w+x);b[k]=b[k+1]=b[k+2]=0;}
+ const result=vectorizeDoubleContours(b,w,h,.5);
+ assert.equal(result.closed,1);
 });

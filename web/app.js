@@ -1,11 +1,13 @@
 import init from './pkg/vectorisation_laser.js';
-import { vectorizeCut, vectorizeCenterline } from './trace-modes.js';
+import { vectorizeCut, vectorizeCenterline, vectorizeDoubleContours } from './trace-modes.js';
+import { createCurveEditor } from './curve-editor.js';
 const $ = id => document.getElementById(id);
 $('threshold').value = '128'; $('contrast').value = '100'; $('simplify').value = '0.5';
 $('thresholdVal').textContent = '128'; $('contrastVal').textContent = '100 %'; $('simplifyVal').textContent = '0.50';
 const canvas = $('original');
 const ctx = canvas.getContext('2d', {willReadFrequently:true});
 let ready = false, loaded = false, svgText = '';
+let curveEditor = null;
 const cleanedImage = $('cleaned');
 const overlay = $('cropOverlay');
 const cropStage = $('cropStage');
@@ -88,7 +90,9 @@ for (const control of document.querySelectorAll('input[name="traceMode"]')) {
   control.addEventListener('change', () => {
     $('modeInfo').textContent=selectedMode()==='cut'
       ? 'Découpe : recherche les formes fermées. Si aucune forme intérieure n’est détectée, un contour extérieur est proposé avec avertissement.'
-      : 'Gravure : amincit les traits en un axe central. Les chemins ouverts sont autorisés.';
+      : selectedMode()==='double'
+        ? 'Deux bords : vectorise les deux limites de la bande d’encre noire, sans fusionner l’intérieur et l’extérieur.'
+        : 'Gravure : amincit les traits en un axe central. Les chemins ouverts sont autorisés.';
     invalidate();
   });
 }
@@ -214,6 +218,7 @@ function setViewerView(b) {
   if(!viewerSvg || !isValidBox(b)) return;
   viewerView=copyBox(b);
   viewerSvg.setAttribute('viewBox',`${b.x} ${b.y} ${b.width} ${b.height}`);
+  curveEditor?.refresh();
   const percent=Math.round(100*viewerBase.width/b.width);
   $('zoomValue').textContent=`${percent} %`;
   $('zoomOut').disabled=percent<=10;
@@ -221,6 +226,9 @@ function setViewerView(b) {
 }
 function fitViewer(){if(viewerBase)setViewerView(viewerBase);}
 function closeSvgDialog(){
+  curveEditor?.close();
+  $('editSvg').checked=false;$('editorTools').hidden=true;
+  zoomStage.classList.remove('is-editing');
   if(svgDialog.open)svgDialog.close();
   zoomStage.replaceChildren();
   viewerSvg=null;viewerBase=null;viewerView=null;panPoint=null;
@@ -228,6 +236,9 @@ function closeSvgDialog(){
 function openSvgDialog(){
   const source=$('result').querySelector('svg');
   if(!source || !fitBox)return;
+  curveEditor?.close();
+  $('editSvg').checked=false;$('editorTools').hidden=true;
+  zoomStage.classList.remove('is-editing');
   viewerSvg=source.cloneNode(true);
   zoomStage.replaceChildren(viewerSvg);
   viewerBase=copyBox(fitBox);
@@ -263,7 +274,10 @@ $('fitSvg').addEventListener('click',fitViewer);
 $('zoomIn').addEventListener('click',()=>zoomAt(1/1.25));
 $('zoomOut').addEventListener('click',()=>zoomAt(1.25));
 svgDialog.addEventListener('close',()=>{
-  // Échap ou fermeture native : réinitialiser l'état du déplacement.
+  // Échap et fermeture native : réinitialiser le déplacement et l’éditeur.
+  curveEditor?.close();
+  $('editSvg').checked=false;$('editorTools').hidden=true;
+  zoomStage.classList.remove('is-editing');
   panPoint=null;zoomStage.classList.remove('is-panning');
 });
 zoomStage.addEventListener('wheel',e=>{
@@ -273,12 +287,14 @@ zoomStage.addEventListener('wheel',e=>{
 },{passive:false});
 zoomStage.addEventListener('pointerdown',e=>{
   if(!viewerSvg || e.button!==0)return;
+  if(curveEditor?.pointerDown(e)){e.preventDefault();return;}
   panPoint={id:e.pointerId,x:e.clientX,y:e.clientY};
   zoomStage.setPointerCapture(e.pointerId);
   zoomStage.classList.add('is-panning');
   e.preventDefault();
 });
 zoomStage.addEventListener('pointermove',e=>{
+  if(curveEditor?.pointerMove(e)){e.preventDefault();return;}
   if(!panPoint || panPoint.id!==e.pointerId || !viewerView)return;
   const rect=zoomStage.getBoundingClientRect();
   const scale=Math.min(rect.width/viewerView.width,rect.height/viewerView.height);
@@ -293,12 +309,73 @@ zoomStage.addEventListener('pointermove',e=>{
   e.preventDefault();
 });
 function stopPan(e){
+  if(curveEditor?.pointerUp(e))return;
   if(!panPoint || panPoint.id!==e.pointerId)return;
   if(zoomStage.hasPointerCapture(e.pointerId))zoomStage.releasePointerCapture(e.pointerId);
   panPoint=null;zoomStage.classList.remove('is-panning');
 }
 zoomStage.addEventListener('pointerup',stopPan);
 zoomStage.addEventListener('pointercancel',stopPan);
+
+// Édition Bézier : les données exportées sont mises à jour seulement après
+// modification. On travaille sur le SVG source, sans exporter les repères.
+curveEditor=createCurveEditor({
+  stage:zoomStage,
+  getSvg:()=>viewerSvg,
+  getIntensity:()=>Number($('smoothIntensity').value)/100,
+  isLinked:()=>$('linkHandles').checked,
+  onMessage:message=>{$('editInfo').textContent=message;},
+  onState:s=>{
+    $('smoothSelected').disabled=!s.enabled||s.selected<0;
+    $('reduceSelected').disabled=!s.enabled||s.selected<0;
+    $('smoothNode').disabled=!s.enabled||s.node<0;
+    $('cornerNode').disabled=!s.enabled||s.node<0;
+    $('deleteNode').disabled=!s.enabled||s.node<0;
+    $('undoEdit').disabled=!s.enabled||!s.undo;
+    $('resetEdit').disabled=!s.enabled;
+    if(s.enabled){
+      const sel=s.selected>=0?`Tracé ${s.selected+1}/${s.pathCount} — ${s.nodeCount} nœuds. `:'Cliquez sur un chemin SVG pour sélectionner ses nœuds. ';
+      $('editInfo').textContent=sel+(s.node>=0?`Nœud ${s.node+1} sélectionné. Déplacez-le ou ses poignées vertes.`:'Choisissez ensuite un point bleu ou utilisez « Lisser le tracé ».');
+    }
+  },
+  onCommit:ds=>{
+    const parser=new DOMParser();
+    const doc=parser.parseFromString(svgText,'image/svg+xml');
+    if(doc.querySelector('parsererror'))throw Error('Impossible de mettre à jour le SVG à exporter.');
+    const sourcePaths=[...doc.querySelectorAll('path')];
+    const preview=$('result').querySelector('svg');
+    const previewPaths=preview?[...preview.querySelectorAll('path')]:[];
+    if(sourcePaths.length!==ds.length||previewPaths.length!==ds.length)throw Error('Nombre de chemins SVG inattendu.');
+    ds.forEach((d,i)=>{sourcePaths[i].setAttribute('d',d);previewPaths[i].setAttribute('d',d);});
+    svgText=new XMLSerializer().serializeToString(doc.documentElement);
+    if(preview){fitBox=fitSvgToContent(preview,canvas.width,canvas.height);viewerBase=copyBox(fitBox);}
+    updateButtons();
+    status('SVG modifié : les nouvelles courbes et poignées seront conservées dans le fichier téléchargé.');
+  }
+});
+$('editSvg').addEventListener('change',e=>{
+  const ok=curveEditor.enable(e.target.checked);
+  if(e.target.checked&&!ok)e.target.checked=false;
+  $('editorTools').hidden=!ok;
+  zoomStage.classList.toggle('is-editing',ok);
+});
+for(const [id,fn] of [
+  ['smoothSelected','smoothSelected'],['reduceSelected','reduceSelected'],
+  ['smoothNode','smoothSelectedNode'],['cornerNode','cornerSelectedNode'],
+  ['deleteNode','deleteSelectedNode'],['undoEdit','undo'],['resetEdit','reset']
+])$(id).addEventListener('click',()=>curveEditor[fn]());
+$('smoothIntensity').addEventListener('input',()=>{
+  $('smoothIntensityValue').textContent=$('smoothIntensity').value+' %';
+});
+svgDialog.addEventListener('keydown',e=>{
+  if(!$('editSvg').checked||['INPUT','TEXTAREA'].includes(document.activeElement?.tagName))return;
+  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){
+    e.preventDefault();curveEditor.undo();
+  }else if(e.key==='Delete'||e.key==='Backspace'){
+    e.preventDefault();curveEditor.deleteSelectedNode();
+  }
+});
+
 
 $('trace').addEventListener('click', async () => {
   if (!ready || !loaded) return;
@@ -364,11 +441,15 @@ $('trace').addEventListener('click', async () => {
     // or thinning + graph walk for single-stroke engraving.
     const tracing=mode==='cut'
       ? vectorizeCut(pixels,width,height,Number($('simplify').value))
-      : vectorizeCenterline(pixels,width,height,Number($('simplify').value));
+      : mode==='double'
+        ? vectorizeDoubleContours(pixels,width,height,Number($('simplify').value))
+        : vectorizeCenterline(pixels,width,height,Number($('simplify').value));
     svgText=tracing.svg;
     $('traceStats').textContent=(mode==='cut'
       ? `Découpe : ${tracing.closed} contour(s) fermé(s), ${tracing.open} chemin(s) ouvert(s). `
-      : `Gravure : ${tracing.paths} tracé(s) central(aux), dont ${tracing.closed} boucle(s) et ${tracing.open} chemin(s) ouvert(s). `)
+      : mode==='double'
+        ? `Deux bords du trait : ${tracing.closed} contour(s) fermé(s) (intérieur et extérieur). `
+        : `Gravure : ${tracing.paths} tracé(s) central(aux), dont ${tracing.closed} boucle(s) et ${tracing.open} chemin(s) ouvert(s). `)
       +(tracing.warning||'');
     const doc=new DOMParser().parseFromString(svgText,'image/svg+xml');
     if(doc.querySelector('parsererror') || doc.documentElement.localName!=='svg') throw new Error('SVG invalide');
@@ -378,15 +459,17 @@ $('trace').addEventListener('click', async () => {
     // Forcer un vrai viewBox et une échelle adaptée à la zone d'affichage.
     // Le texte SVG à télécharger reste inchangé.
     fitBox=fitSvgToContent(previewSvg,width,height);
-    status(`Vectorisation ${mode==='cut'?'pour découpe':'pour gravure'} terminée — ${blackPercent} % de pixels noirs après nettoyage. Vérifiez les tracés et l’échelle physique.`);
+    status(`Vectorisation ${mode==='cut'?'pour découpe':mode==='double'?'des deux bords du trait':'pour gravure'} terminée — ${blackPercent} % de pixels noirs après nettoyage. Vérifiez les tracés et l’échelle physique.`);
   } catch(err){svgText='';$('traceStats').textContent='';status('Erreur : '+String(err?.message || err));}
   updateButtons();
 });
-$('download').addEventListener('click',()=>{
+function downloadSvg(){
   if(!svgText)return;
   const url=URL.createObjectURL(new Blob([svgText],{type:'image/svg+xml;charset=utf-8'}));
-  const a=document.createElement('a');a.href=url;a.download=selectedMode()==='cut'?'dessin-decoupe-contours-fermes.svg':'dessin-gravure-ligne-centrale.svg';a.click();
+  const a=document.createElement('a');a.href=url;a.download=selectedMode()==='cut'?'dessin-decoupe-contours-fermes.svg':selectedMode()==='double'?'dessin-double-contour.svg':'dessin-gravure-ligne-centrale.svg';a.click();
   setTimeout(()=>URL.revokeObjectURL(url),1000);
-});
-try{await init();ready=true;status('Application prête : choisissez une image et un mode de vectorisation.');}catch(err){ready=true;status('Moteur VTracer indisponible, mais les deux modes de vectorisation V9 restent disponibles.');}
+}
+$('download').addEventListener('click',downloadSvg);
+$('downloadEdited').addEventListener('click',downloadSvg);
+try{await init();ready=true;status('Application prête : trois modes de vectorisation et édition des courbes dans Agrandir / Zoom.');}catch(err){ready=true;status('WASM VTracer indisponible : les trois modes de vectorisation JavaScript restent opérationnels.');}
 updateButtons();
