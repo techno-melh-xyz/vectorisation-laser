@@ -20,3 +20,11 @@
 .crop-stage #cropOverlay{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;display:block!important;pointer-events:none!important;z-index:3}
 .crop-stage.selecting{cursor:crosshair!important;touch-action:none}
 .crop-controls{margin-top:14px}
+
+/* V6 : commandes toujours sous l'image d'origine, dans son panneau. */
+.original-panel{display:flex;flex-direction:column}
+.original-panel .crop-controls{position:static!important;display:block!important;order:3;margin-top:14px!important}
+.original-panel .preview{order:2}
+.original-panel .crop-help{order:1}
+.original-panel h2{order:0}
+.version{font-size:.48em;font-weight:600;vertical-align:middle;opacity:.8}

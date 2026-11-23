@@ -1,5 +1,8 @@
 import init, { vectorize_rgba } from './pkg/vectorisation_laser.js';
 const $ = id => document.getElementById(id);
+// Valeurs par défaut V6 (même si le navigateur restaure d'anciens curseurs).
+$('threshold').value = '128'; $('contrast').value = '100'; $('simplify').value = '0.5';
+$('thresholdVal').textContent = '128'; $('contrastVal').textContent = '100 %'; $('simplifyVal').textContent = '0.50';
 const canvas = $('original');
 const ctx = canvas.getContext('2d', {willReadFrequently:true});
 let ready = false, loaded = false, svgText = '';
@@ -29,7 +32,7 @@ function pointerCoords(e){
 }
 $('cropMode').addEventListener('change',()=>{
   $('cropStage').classList.toggle('selecting',$('cropMode').checked && loaded);
-  $('cropHelp').textContent=$('cropMode').checked ? 'Cliquez et faites glisser la souris sur le sapin pour dessiner le rectangle bleu.' : 'Cochez le mode recadrage sous l’image nettoyée, puis dessinez un rectangle ici.';
+  $('cropHelp').textContent=$('cropMode').checked ? 'Cliquez et faites glisser la souris sur le sapin pour dessiner le rectangle bleu.' : 'Cochez le mode recadrage sous l’image d’origine, puis dessinez un rectangle ici.';
   $('cropInfo').textContent=$('cropMode').checked ? 'Dessinez un rectangle sur l’image d’origine, dans le panneau de gauche.' : 'Activez la sélection pour recadrer l’image.';
   if(!$('cropMode').checked){selection=null;drawSelection();$('applyCrop').disabled=true;}
 });
