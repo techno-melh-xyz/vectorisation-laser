@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 const canvas = $('original');
 const ctx = canvas.getContext('2d', {willReadFrequently:true});
 let ready = false, loaded = false, svgText = '';
-const cleanedCanvas = $('cleaned');
+const cleanedImage = $('cleaned');
 function invalidate(){svgText='';$('result').replaceChildren();updateButtons();}
 $('adaptive').addEventListener('change',invalidate);
 const status = message => $('status').textContent = message;
@@ -13,7 +13,7 @@ for (const [id, format] of [['threshold',v=>v],['contrast',v=>v+' %'],['simplify
 }
 $('file').addEventListener('change', async e => {
   const file = e.target.files?.[0]; if (!file) return;
-  loaded = false; invalidate(); cleanedCanvas.width=1; cleanedCanvas.height=1;
+  loaded = false; invalidate(); cleanedImage.removeAttribute('src');
   try {
     const bitmap = await createImageBitmap(file);
     const scale = Math.min(1, 2400 / Math.max(bitmap.width, bitmap.height));
@@ -68,13 +68,21 @@ $('trace').addEventListener('click', async () => {
         pixels[i]=pixels[i+1]=pixels[i+2]=v;pixels[i+3]=255;
       }
     }
-    cleanedCanvas.width=width;cleanedCanvas.height=height;
-    cleanedCanvas.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(pixels),width,height),0,0);
-    const blackPixels=pixels.reduce((n,v,i)=>n+(i%4===0 && v===0?1:0),0);
+    // Aperçu PNG indépendant du canvas : évite un canvas transparent ou mal dimensionné.
+    const previewCanvas=document.createElement('canvas');
+    previewCanvas.width=width; previewCanvas.height=height;
+    const previewContext=previewCanvas.getContext('2d');
+    previewContext.putImageData(new ImageData(new Uint8ClampedArray(pixels),width,height),0,0);
+    cleanedImage.src=previewCanvas.toDataURL('image/png');
+    cleanedImage.alt='Image réellement envoyée au moteur VTracer';
+    let blackPixels=0; for(let i=0;i<pixels.length;i+=4)if(pixels[i]===0)blackPixels++; 
     const blackPercent=(100*blackPixels/(width*height)).toFixed(2);
+    $('diagnostic').textContent=`Prétraitement : ${blackPixels.toLocaleString('fr-FR')} pixels noirs sur ${(width*height).toLocaleString('fr-FR')} (${blackPercent} %). Image ${width} × ${height}.`; 
     if(blackPixels===0 || blackPixels===width*height){
       throw new Error('Image nettoyée entièrement '+(blackPixels===0?'blanche':'noire')+'. Ajustez le seuil ou le mode de nettoyage.');
     }
+    // Laisser le navigateur afficher l'image nettoyée avant le calcul WASM.
+    await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
     svgText=vectorize_rgba(pixels,width,height,Number($('simplify').value));
     const doc=new DOMParser().parseFromString(svgText,'image/svg+xml');
     if(doc.querySelector('parsererror') || doc.documentElement.localName!=='svg') throw new Error('SVG invalide');
