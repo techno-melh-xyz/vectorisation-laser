@@ -1,4 +1,5 @@
-import init, { vectorize_rgba } from './pkg/vectorisation_laser.js';
+import init from './pkg/vectorisation_laser.js';
+import { vectorizeCut, vectorizeCenterline } from './trace-modes.js';
 const $ = id => document.getElementById(id);
 $('threshold').value = '128'; $('contrast').value = '100'; $('simplify').value = '0.5';
 $('thresholdVal').textContent = '128'; $('contrastVal').textContent = '100 %'; $('simplifyVal').textContent = '0.50';
@@ -80,8 +81,18 @@ $('resetCrop').addEventListener('click',()=>{
   currentCrop=null;$('cropMode').checked=false;renderCrop();
   $('cropInfo').textContent='Image entière rétablie.';status('Image entière rétablie.');
 });
-function invalidate(){svgText='';$('result').replaceChildren();fitBox=null;closeSvgDialog();updateButtons();}
+function invalidate(){svgText='';$('result').replaceChildren();$('traceStats').textContent='';fitBox=null;closeSvgDialog();updateButtons();}
 $('adaptive').addEventListener('change',invalidate);
+function selectedMode(){ return document.querySelector('input[name="traceMode"]:checked')?.value || 'cut'; }
+for (const control of document.querySelectorAll('input[name="traceMode"]')) {
+  control.addEventListener('change', () => {
+    $('modeInfo').textContent=selectedMode()==='cut'
+      ? 'Découpe : recherche les formes fermées. Si aucune forme intérieure n’est détectée, un contour extérieur est proposé avec avertissement.'
+      : 'Gravure : amincit les traits en un axe central. Les chemins ouverts sont autorisés.';
+    invalidate();
+  });
+}
+
 const status = message => $('status').textContent = message;
 const updateButtons = () => {
   $('trace').disabled = !(ready && loaded);
@@ -348,7 +359,17 @@ $('trace').addEventListener('click', async () => {
     }
 
     await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
-    svgText=vectorize_rgba(pixels,width,height,Number($('simplify').value));
+    const mode=selectedMode();
+    // Two distinct geometric tracers: filled regions for closed cutting outlines,
+    // or thinning + graph walk for single-stroke engraving.
+    const tracing=mode==='cut'
+      ? vectorizeCut(pixels,width,height,Number($('simplify').value))
+      : vectorizeCenterline(pixels,width,height,Number($('simplify').value));
+    svgText=tracing.svg;
+    $('traceStats').textContent=(mode==='cut'
+      ? `Découpe : ${tracing.closed} contour(s) fermé(s), ${tracing.open} chemin(s) ouvert(s). `
+      : `Gravure : ${tracing.paths} tracé(s) central(aux), dont ${tracing.closed} boucle(s) et ${tracing.open} chemin(s) ouvert(s). `)
+      +(tracing.warning||'');
     const doc=new DOMParser().parseFromString(svgText,'image/svg+xml');
     if(doc.querySelector('parsererror') || doc.documentElement.localName!=='svg') throw new Error('SVG invalide');
     const svg=doc.documentElement;
@@ -357,15 +378,15 @@ $('trace').addEventListener('click', async () => {
     // Forcer un vrai viewBox et une échelle adaptée à la zone d'affichage.
     // Le texte SVG à télécharger reste inchangé.
     fitBox=fitSvgToContent(previewSvg,width,height);
-    status(`Vectorisation terminée — ${blackPercent} % de pixels noirs détectés après nettoyage. Vérifiez l’image nettoyée et les contours avant découpe.`);
-  } catch(err){svgText='';status('Erreur : '+String(err));}
+    status(`Vectorisation ${mode==='cut'?'pour découpe':'pour gravure'} terminée — ${blackPercent} % de pixels noirs après nettoyage. Vérifiez les tracés et l’échelle physique.`);
+  } catch(err){svgText='';$('traceStats').textContent='';status('Erreur : '+String(err?.message || err));}
   updateButtons();
 });
 $('download').addEventListener('click',()=>{
   if(!svgText)return;
   const url=URL.createObjectURL(new Blob([svgText],{type:'image/svg+xml;charset=utf-8'}));
-  const a=document.createElement('a');a.href=url;a.download='dessin-vectorise.svg';a.click();
+  const a=document.createElement('a');a.href=url;a.download=selectedMode()==='cut'?'dessin-decoupe-contours-fermes.svg':'dessin-gravure-ligne-centrale.svg';a.click();
   setTimeout(()=>URL.revokeObjectURL(url),1000);
 });
-try{await init();ready=true;status('Moteur Rust / WebAssembly prêt. Choisissez une image.');}catch(err){status('Impossible de charger le moteur WASM : '+String(err));}
+try{await init();ready=true;status('Application prête : choisissez une image et un mode de vectorisation.');}catch(err){ready=true;status('Moteur VTracer indisponible, mais les deux modes de vectorisation V9 restent disponibles.');}
 updateButtons();
