@@ -1,6 +1,5 @@
 import init, { vectorize_rgba } from './pkg/vectorisation_laser.js';
 const $ = id => document.getElementById(id);
-// Valeurs par défaut V6 (même si le navigateur restaure d'anciens curseurs).
 $('threshold').value = '128'; $('contrast').value = '100'; $('simplify').value = '0.5';
 $('thresholdVal').textContent = '128'; $('contrastVal').textContent = '100 %'; $('simplifyVal').textContent = '0.50';
 const canvas = $('original');
@@ -14,6 +13,7 @@ const sourceCanvas = document.createElement('canvas');
 const sourceCtx = sourceCanvas.getContext('2d');
 let selection = null, dragging = false, dragStart = null;
 let currentCrop = null;
+
 function clearOutput(){invalidate();cleanedImage.removeAttribute('src');$('diagnostic').textContent='Aucune image traitée.';}
 function syncOverlay(){overlay.width=canvas.width;overlay.height=canvas.height;drawSelection();}
 function drawSelection(){
@@ -70,7 +70,6 @@ function renderCrop(){
 }
 $('applyCrop').addEventListener('click',()=>{
   if(!selection || !loaded)return;
-  // La sélection est exprimée dans les coordonnées de l'image affichée.
   const r=currentCrop || {x:0,y:0,w:sourceCanvas.width,h:sourceCanvas.height};
   currentCrop={x:r.x+selection.x,y:r.y+selection.y,w:Math.min(selection.w,r.w-selection.x),h:Math.min(selection.h,r.h-selection.y)};
   $('cropMode').checked=false;renderCrop();
@@ -101,6 +100,69 @@ $('file').addEventListener('change', async e => {
     loaded=true; renderCrop();$('cropInfo').textContent='Cochez la sélection, puis tracez un rectangle directement sur l’image.'; status(`Image prête (${canvas.width} × ${canvas.height} px).`); updateButtons();
   } catch(err) {status('Impossible de lire cette image : '+err.message);}
 });
+
+function despeckleBinary(pixels, width, height) {
+  const total = width * height;
+  const black = new Uint8Array(total);
+  for (let i = 0, p = 0; i < total; i++, p += 4) black[i] = pixels[p] === 0 ? 1 : 0;
+
+  const visited = new Uint8Array(total);
+  const queue = new Int32Array(total);
+  const minArea = Math.max(12, Math.round(Math.min(width, height) / 45));
+  const borderMargin = Math.max(2, Math.round(Math.min(width, height) / 100));
+  let removedSpeckles = 0;
+  let removedBorderBlobs = 0;
+  let keptComponents = 0;
+
+  const neighbors = [-1, 1, -width, width];
+  for (let start = 0; start < total; start++) {
+    if (!black[start] || visited[start]) continue;
+    let qh = 0, qt = 0;
+    queue[qt++] = start;
+    visited[start] = 1;
+    let area = 0;
+    let touchesBorder = false;
+    const component = [];
+    while (qh < qt) {
+      const idx = queue[qh++];
+      component.push(idx);
+      area++;
+      const x = idx % width;
+      const y = (idx / width) | 0;
+      if (x <= borderMargin || y <= borderMargin || x >= width - 1 - borderMargin || y >= height - 1 - borderMargin) touchesBorder = true;
+      // 4-neighborhood with edge checks
+      if (x > 0) {
+        const n = idx - 1;
+        if (black[n] && !visited[n]) { visited[n] = 1; queue[qt++] = n; }
+      }
+      if (x + 1 < width) {
+        const n = idx + 1;
+        if (black[n] && !visited[n]) { visited[n] = 1; queue[qt++] = n; }
+      }
+      if (y > 0) {
+        const n = idx - width;
+        if (black[n] && !visited[n]) { visited[n] = 1; queue[qt++] = n; }
+      }
+      if (y + 1 < height) {
+        const n = idx + width;
+        if (black[n] && !visited[n]) { visited[n] = 1; queue[qt++] = n; }
+      }
+    }
+
+    const remove = area < minArea || touchesBorder;
+    if (remove) {
+      if (touchesBorder) removedBorderBlobs++; else removedSpeckles++;
+      for (const idx of component) {
+        const p = idx * 4;
+        pixels[p] = pixels[p + 1] = pixels[p + 2] = 255;
+      }
+    } else {
+      keptComponents++;
+    }
+  }
+  return { removedSpeckles, removedBorderBlobs, keptComponents, minArea };
+}
+
 $('trace').addEventListener('click', async () => {
   if (!ready || !loaded) return;
   $('trace').disabled = true; status('Vectorisation en cours…');
@@ -117,7 +179,6 @@ $('trace').addEventListener('click', async () => {
       lum[j]=(0.2126*rgba[i]+0.7152*rgba[i+1]+0.0722*rgba[i+2])*alpha+255*(1-alpha);
     }
     if($('adaptive').checked){
-      // Moyenne locale rapide par image intégrale : neutralise les ombres larges.
       const stride=width+1, integral=new Float64Array(stride*(height+1));
       for(let y=0;y<height;y++){
         let rowSum=0;
@@ -127,8 +188,6 @@ $('trace').addEventListener('click', async () => {
         }
       }
       const radius=Math.max(18,Math.round(Math.min(width,height)/24));
-      // Plus le seuil augmente, plus les traits peu contrastés sont détectés.
-      // À 128, un écart de 5 niveaux suffit pour les traits fins.
       const delta=Math.max(1.5,Math.min(16,5+(128-threshold)*0.065));
       for(let y=0;y<height;y++)for(let x=0;x<width;x++){
         const x0=Math.max(0,x-radius),x1=Math.min(width,x+radius+1);
@@ -145,28 +204,30 @@ $('trace').addEventListener('click', async () => {
         pixels[i]=pixels[i+1]=pixels[i+2]=v;pixels[i+3]=255;
       }
     }
-    // Aperçu PNG indépendant du canvas : évite un canvas transparent ou mal dimensionné.
+
+    const filtering = despeckleBinary(pixels, width, height);
+
     const previewCanvas=document.createElement('canvas');
     previewCanvas.width=width; previewCanvas.height=height;
     const previewContext=previewCanvas.getContext('2d');
     previewContext.putImageData(new ImageData(new Uint8ClampedArray(pixels),width,height),0,0);
     cleanedImage.src=previewCanvas.toDataURL('image/png');
     cleanedImage.alt='Image réellement envoyée au moteur VTracer';
-    let blackPixels=0; for(let i=0;i<pixels.length;i+=4)if(pixels[i]===0)blackPixels++; 
+
+    let blackPixels=0; for(let i=0;i<pixels.length;i+=4)if(pixels[i]===0)blackPixels++;
     const blackPercent=(100*blackPixels/(width*height)).toFixed(2);
-    $('diagnostic').textContent=`Prétraitement : ${blackPixels.toLocaleString('fr-FR')} pixels noirs sur ${(width*height).toLocaleString('fr-FR')} (${blackPercent} %). Image ${width} × ${height}.`; 
+    $('diagnostic').textContent=`Prétraitement : ${blackPixels.toLocaleString('fr-FR')} pixels noirs sur ${(width*height).toLocaleString('fr-FR')} (${blackPercent} %). Image ${width} × ${height}. Composantes gardées : ${filtering.keptComponents}. Parasites supprimés : ${filtering.removedSpeckles}. Taches de bord supprimées : ${filtering.removedBorderBlobs}.`;
     if(blackPixels===0 || blackPixels===width*height){
       throw new Error('Image nettoyée entièrement '+(blackPixels===0?'blanche':'noire')+'. Ajustez le seuil ou le mode de nettoyage.');
     }
-    // Laisser le navigateur afficher l'image nettoyée avant le calcul WASM.
+
     await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
     svgText=vectorize_rgba(pixels,width,height,Number($('simplify').value));
     const doc=new DOMParser().parseFromString(svgText,'image/svg+xml');
     if(doc.querySelector('parsererror') || doc.documentElement.localName!=='svg') throw new Error('SVG invalide');
     const svg=doc.documentElement;
-    // Le contenu provient uniquement du moteur local, pas d'un SVG téléversé.
     $('result').replaceChildren(document.importNode(svg,true));
-    status(`Vectorisation terminée — ${blackPercent} % de pixels noirs détectés. Vérifiez l’image nettoyée et les contours avant découpe.`);
+    status(`Vectorisation terminée — ${blackPercent} % de pixels noirs détectés après nettoyage. Vérifiez l’image nettoyée et les contours avant découpe.`);
   } catch(err){svgText='';status('Erreur : '+String(err));}
   updateButtons();
 });
