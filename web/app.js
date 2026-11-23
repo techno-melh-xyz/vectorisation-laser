@@ -22,17 +22,20 @@ function drawSelection(){
   overlayCtx.strokeRect(x,y,w,h);overlayCtx.setLineDash([]);
 }
 function pointerCoords(e){
-  const rect=overlay.getBoundingClientRect();
+  const rect=canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return {x:0,y:0};
   return {x:Math.max(0,Math.min(canvas.width,(e.clientX-rect.left)*canvas.width/rect.width)),y:Math.max(0,Math.min(canvas.height,(e.clientY-rect.top)*canvas.height/rect.height))};
 }
 $('cropMode').addEventListener('change',()=>{
   $('cropStage').classList.toggle('selecting',$('cropMode').checked && loaded);
+  $('cropHelp').textContent=$('cropMode').checked ? 'Cliquez et faites glisser la souris sur le sapin pour dessiner le rectangle bleu.' : 'Cochez le mode recadrage sous l’image nettoyée, puis dessinez un rectangle ici.';
+  $('cropInfo').textContent=$('cropMode').checked ? 'Dessinez un rectangle sur l’image d’origine, dans le panneau de gauche.' : 'Activez la sélection pour recadrer l’image.';
   if(!$('cropMode').checked){selection=null;drawSelection();$('applyCrop').disabled=true;}
 });
 overlay.addEventListener('pointerdown',e=>{
   if(!loaded || !$('cropMode').checked)return;
   dragging=true;dragStart=pointerCoords(e);selection=null;
-  overlay.setPointerCapture(e.pointerId);e.preventDefault();
+  overlay.setPointerCapture(e.pointerId);drawSelection();e.preventDefault();
 });
 overlay.addEventListener('pointermove',e=>{
   if(!dragging)return;
@@ -47,6 +50,7 @@ function finishSelection(e){
   selection={x:Math.round(Math.min(dragStart.x,p.x)),y:Math.round(Math.min(dragStart.y,p.y)),w:Math.round(Math.abs(p.x-dragStart.x)),h:Math.round(Math.abs(p.y-dragStart.y))};
   if(selection.w<8 || selection.h<8)selection=null;
   drawSelection();$('applyCrop').disabled=!selection;
+  if(selection) $('cropMode').checked=true;
   $('cropInfo').textContent=selection?`Sélection : ${selection.w} × ${selection.h} px. Cliquez sur « Appliquer le recadrage ».`:'Sélection trop petite : tracez un rectangle plus grand.';
 }
 overlay.addEventListener('pointerup',finishSelection);
