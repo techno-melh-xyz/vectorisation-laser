@@ -80,10 +80,14 @@ $('resetCrop').addEventListener('click',()=>{
   currentCrop=null;$('cropMode').checked=false;renderCrop();
   $('cropInfo').textContent='Image entière rétablie.';status('Image entière rétablie.');
 });
-function invalidate(){svgText='';$('result').replaceChildren();updateButtons();}
+function invalidate(){svgText='';$('result').replaceChildren();fitBox=null;closeSvgDialog();updateButtons();}
 $('adaptive').addEventListener('change',invalidate);
 const status = message => $('status').textContent = message;
-const updateButtons = () => { $('trace').disabled = !(ready && loaded); $('download').disabled = !svgText; };
+const updateButtons = () => {
+  $('trace').disabled = !(ready && loaded);
+  $('download').disabled = !svgText;
+  $('openSvgPreview').disabled = !svgText;
+};
 for (const [id, format] of [['threshold',v=>v],['contrast',v=>v+' %'],['simplify',v=>Number(v).toFixed(2)]]) {
   $(id).addEventListener('input', () => { $(id+'Val').textContent = format($(id).value); invalidate(); });
 }
@@ -163,6 +167,128 @@ function despeckleBinary(pixels, width, height) {
   return { removedSpeckles, removedBorderBlobs, keptComponents, minArea };
 }
 
+
+// Aperçu vectoriel : le SVG reçu peut avoir des dimensions fixes très grandes.
+// Son viewBox est recalculé à partir des formes réelles (avec une marge).
+// On n'altère jamais svgText, afin de préserver l'export tel que produit par VTracer.
+let fitBox = null;
+let viewerSvg = null;
+let viewerView = null;
+let viewerBase = null;
+let panPoint = null;
+const svgDialog = $('svgDialog');
+const zoomStage = $('svgZoomStage');
+function isValidBox(b) {
+  return !!b && [b.x,b.y,b.width,b.height].every(Number.isFinite) && b.width > 0 && b.height > 0;
+}
+function paddedBox(b) {
+  const margin=Math.max(2,Math.max(b.width,b.height)*0.045);
+  return {x:b.x-margin,y:b.y-margin,width:b.width+2*margin,height:b.height+2*margin};
+}
+function fitSvgToContent(svg, width, height) {
+  svg.setAttribute('width','100%');
+  svg.setAttribute('height','100%');
+  svg.setAttribute('preserveAspectRatio','xMidYMid meet');
+  // Calculer la boîte englobante après insertion dans le document :
+  // contrairement au width/height du SVG, elle tient compte des tracés réels.
+  let bounds;
+  try { bounds=svg.getBBox(); } catch (_) { /* SVG sans géométrie mesurable */ }
+  const fallback={x:0,y:0,width:width||1,height:height||1};
+  const base=isValidBox(bounds) ? paddedBox(bounds) : paddedBox(fallback);
+  svg.setAttribute('viewBox',`${base.x} ${base.y} ${base.width} ${base.height}`);
+  return base;
+}
+function copyBox(b){return {x:b.x,y:b.y,width:b.width,height:b.height};}
+function setViewerView(b) {
+  if(!viewerSvg || !isValidBox(b)) return;
+  viewerView=copyBox(b);
+  viewerSvg.setAttribute('viewBox',`${b.x} ${b.y} ${b.width} ${b.height}`);
+  const percent=Math.round(100*viewerBase.width/b.width);
+  $('zoomValue').textContent=`${percent} %`;
+  $('zoomOut').disabled=percent<=10;
+  $('zoomIn').disabled=percent>=1600;
+}
+function fitViewer(){if(viewerBase)setViewerView(viewerBase);}
+function closeSvgDialog(){
+  if(svgDialog.open)svgDialog.close();
+  zoomStage.replaceChildren();
+  viewerSvg=null;viewerBase=null;viewerView=null;panPoint=null;
+}
+function openSvgDialog(){
+  const source=$('result').querySelector('svg');
+  if(!source || !fitBox)return;
+  viewerSvg=source.cloneNode(true);
+  zoomStage.replaceChildren(viewerSvg);
+  viewerBase=copyBox(fitBox);
+  viewerView=copyBox(fitBox);
+  svgDialog.showModal();
+  requestAnimationFrame(()=>{
+    if(viewerSvg){fitViewer();$('closeSvgPreview').focus();}
+  });
+}
+function zoomAt(multiplier,clientX=null,clientY=null){
+  if(!viewerSvg || !viewerView)return;
+  const current=viewerView;
+  const currentPercent=viewerBase.width/current.width;
+  const targetPercent=Math.min(16,Math.max(.1,currentPercent/multiplier));
+  const factor=currentPercent/targetPercent;
+  const next={x:current.x,y:current.y,width:current.width*factor,height:current.height*factor};
+  // La molette conserve le point du dessin sous le curseur.
+  let anchor={x:current.x+current.width/2,y:current.y+current.height/2};
+  if(clientX!==null && clientY!==null){
+    const mat=viewerSvg.getScreenCTM();
+    if(mat){
+      const pt=new DOMPoint(clientX,clientY).matrixTransform(mat.inverse());
+      if(Number.isFinite(pt.x)&&Number.isFinite(pt.y))anchor={x:pt.x,y:pt.y};
+    }
+  }
+  next.x=anchor.x-(anchor.x-current.x)*factor;
+  next.y=anchor.y-(anchor.y-current.y)*factor;
+  setViewerView(next);
+}
+$('openSvgPreview').addEventListener('click',openSvgDialog);
+$('closeSvgPreview').addEventListener('click',closeSvgDialog);
+$('fitSvg').addEventListener('click',fitViewer);
+$('zoomIn').addEventListener('click',()=>zoomAt(1/1.25));
+$('zoomOut').addEventListener('click',()=>zoomAt(1.25));
+svgDialog.addEventListener('close',()=>{
+  // Échap ou fermeture native : réinitialiser l'état du déplacement.
+  panPoint=null;zoomStage.classList.remove('is-panning');
+});
+zoomStage.addEventListener('wheel',e=>{
+  if(!viewerSvg)return;
+  e.preventDefault();
+  zoomAt(e.deltaY<0 ? 1/1.15 : 1.15,e.clientX,e.clientY);
+},{passive:false});
+zoomStage.addEventListener('pointerdown',e=>{
+  if(!viewerSvg || e.button!==0)return;
+  panPoint={id:e.pointerId,x:e.clientX,y:e.clientY};
+  zoomStage.setPointerCapture(e.pointerId);
+  zoomStage.classList.add('is-panning');
+  e.preventDefault();
+});
+zoomStage.addEventListener('pointermove',e=>{
+  if(!panPoint || panPoint.id!==e.pointerId || !viewerView)return;
+  const rect=zoomStage.getBoundingClientRect();
+  const scale=Math.min(rect.width/viewerView.width,rect.height/viewerView.height);
+  if(scale>0){
+    setViewerView({
+      ...viewerView,
+      x:viewerView.x-(e.clientX-panPoint.x)/scale,
+      y:viewerView.y-(e.clientY-panPoint.y)/scale
+    });
+  }
+  panPoint.x=e.clientX;panPoint.y=e.clientY;
+  e.preventDefault();
+});
+function stopPan(e){
+  if(!panPoint || panPoint.id!==e.pointerId)return;
+  if(zoomStage.hasPointerCapture(e.pointerId))zoomStage.releasePointerCapture(e.pointerId);
+  panPoint=null;zoomStage.classList.remove('is-panning');
+}
+zoomStage.addEventListener('pointerup',stopPan);
+zoomStage.addEventListener('pointercancel',stopPan);
+
 $('trace').addEventListener('click', async () => {
   if (!ready || !loaded) return;
   $('trace').disabled = true; status('Vectorisation en cours…');
@@ -226,7 +352,11 @@ $('trace').addEventListener('click', async () => {
     const doc=new DOMParser().parseFromString(svgText,'image/svg+xml');
     if(doc.querySelector('parsererror') || doc.documentElement.localName!=='svg') throw new Error('SVG invalide');
     const svg=doc.documentElement;
-    $('result').replaceChildren(document.importNode(svg,true));
+    const previewSvg=document.importNode(svg,true);
+    $('result').replaceChildren(previewSvg);
+    // Forcer un vrai viewBox et une échelle adaptée à la zone d'affichage.
+    // Le texte SVG à télécharger reste inchangé.
+    fitBox=fitSvgToContent(previewSvg,width,height);
     status(`Vectorisation terminée — ${blackPercent} % de pixels noirs détectés après nettoyage. Vérifiez l’image nettoyée et les contours avant découpe.`);
   } catch(err){svgText='';status('Erreur : '+String(err));}
   updateButtons();
