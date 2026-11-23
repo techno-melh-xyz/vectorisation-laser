@@ -38,3 +38,8 @@ Ouvrir `http://localhost:8000`. Ne pas ouvrir `web/index.html` en `file://` : le
 ## Licence
 
 Code de cette application : MIT. Moteur VTracer : MIT OR Apache-2.0, voir https://github.com/visioncortex/vtracer .
+
+
+## Correction du traitement des photographies
+
+Le mode « Nettoyage automatique du fond » est activé par défaut. Il compare chaque pixel à la luminosité moyenne de son voisinage (image intégrale), pour supprimer les ombres du papier avant le passage à VTracer. L’aperçu « Image nettoyée » permet de vérifier la détection des traits. Le seuil règle la sensibilité en mode adaptatif ; le mode classique reste disponible en décochant la case. Le moteur Rust et le workflow GitHub Actions restent inchangés. Les traits peuvent devenir des contours doubles : vérifiez le SVG avant découpe.
