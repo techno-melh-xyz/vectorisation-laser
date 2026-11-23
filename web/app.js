@@ -49,9 +49,10 @@ $('trace').addEventListener('click', async () => {
           integral[(y+1)*stride+x+1]=integral[y*stride+x+1]+rowSum;
         }
       }
-      const radius=Math.max(12,Math.round(Math.min(width,height)/14));
-      // 128 -> écart 15 niveaux. Plus le seuil est élevé, plus les traits faibles sont conservés.
-      const delta=Math.max(3,15+(128-threshold)*0.13);
+      const radius=Math.max(18,Math.round(Math.min(width,height)/24));
+      // Plus le seuil augmente, plus les traits peu contrastés sont détectés.
+      // À 128, un écart de 5 niveaux suffit pour les traits fins.
+      const delta=Math.max(1.5,Math.min(16,5+(128-threshold)*0.065));
       for(let y=0;y<height;y++)for(let x=0;x<width;x++){
         const x0=Math.max(0,x-radius),x1=Math.min(width,x+radius+1);
         const y0=Math.max(0,y-radius),y1=Math.min(height,y+radius+1);
@@ -70,6 +71,7 @@ $('trace').addEventListener('click', async () => {
     cleanedCanvas.width=width;cleanedCanvas.height=height;
     cleanedCanvas.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(pixels),width,height),0,0);
     const blackPixels=pixels.reduce((n,v,i)=>n+(i%4===0 && v===0?1:0),0);
+    const blackPercent=(100*blackPixels/(width*height)).toFixed(2);
     if(blackPixels===0 || blackPixels===width*height){
       throw new Error('Image nettoyée entièrement '+(blackPixels===0?'blanche':'noire')+'. Ajustez le seuil ou le mode de nettoyage.');
     }
@@ -79,7 +81,7 @@ $('trace').addEventListener('click', async () => {
     const svg=doc.documentElement;
     // Le contenu provient uniquement du moteur local, pas d'un SVG téléversé.
     $('result').replaceChildren(document.importNode(svg,true));
-    status('Vectorisation terminée. Vérifiez l’image nettoyée et les contours avant découpe.');
+    status(`Vectorisation terminée — ${blackPercent} % de pixels noirs détectés. Vérifiez l’image nettoyée et les contours avant découpe.`);
   } catch(err){svgText='';status('Erreur : '+String(err));}
   updateButtons();
 });
