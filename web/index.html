@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Vectorisation Laser — PNG vers SVG</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=5">
 </head>
 <body>
 <header><div class="wrap"><h1>Vectorisation Laser</h1><p>Convertir un dessin noir sur blanc en contours SVG pour la découpe laser</p></div></header>
@@ -21,7 +21,11 @@
 <p id="diagnostic" aria-live="polite">Aucune image traitée.</p>
 <p id="status" role="status" aria-live="polite">Chargement du moteur Rust…</p>
 </section>
-<div class="views three"><section class="panel"><h2>Image d'origine</h2><p class="crop-help" id="cropHelp">Cochez le mode recadrage sous l’image nettoyée, puis dessinez un rectangle ici.</p><div class="preview"><div class="crop-stage" id="cropStage"><canvas id="original"></canvas><canvas id="cropOverlay" aria-label="Sélection rectangulaire de recadrage"></canvas></div></div></section><section class="panel"><h2>Image nettoyée</h2><div class="preview"><img id="cleaned" alt="Image nettoyée non encore calculée"></div><div class="crop-controls"><label class="mode"><input type="checkbox" id="cropMode"> Sélectionner une zone à recadrer</label><div class="crop-buttons"><button id="applyCrop" type="button" disabled>Appliquer le recadrage</button><button id="resetCrop" type="button" disabled>Rétablir l’image entière</button></div><p id="cropInfo" aria-live="polite">Activez la sélection, puis tracez un rectangle sur l’image d’origine à gauche.</p></div></section><section class="panel"><h2>Résultat vectorisé</h2><div class="preview" id="result"><span>Le SVG apparaîtra ici.</span></div></section></div>
+<div class="views three">
+<section class="panel"><h2>Image d'origine</h2><p class="crop-help" id="cropHelp">Activez le recadrage puis glissez la souris sur l’image.</p><div class="preview"><div class="crop-stage" id="cropStage"><canvas id="original"></canvas><canvas id="cropOverlay" aria-label="Rectangle de sélection"></canvas></div></div><div class="crop-controls"><label class="mode"><input type="checkbox" id="cropMode"> Sélectionner une zone à recadrer</label><div class="crop-buttons"><button id="applyCrop" type="button" disabled>Appliquer le recadrage</button><button id="resetCrop" type="button" disabled>Rétablir l’image entière</button></div><p id="cropInfo" aria-live="polite">Importez une image pour commencer.</p></div></section>
+<section class="panel"><h2>Image nettoyée</h2><div class="preview"><img id="cleaned" alt="Image nettoyée non encore calculée"></div></section>
+<section class="panel"><h2>Résultat vectorisé</h2><div class="preview" id="result"><span>Le SVG apparaîtra ici.</span></div></section>
+</div>
 <section class="panel notice"><h2>Pour la découpe laser</h2><p>Vérifier le SVG dans xTool Studio ou LightBurn avant découpe : la vectorisation peut créer des contours doubles autour des traits épais, des îlots ou des formes non souhaitées. Ce prototype ne garantit pas un tracé unique ni des contours fermés adaptés à chaque dessin.</p><p>Les images restent sur votre appareil : aucun téléversement vers un serveur.</p></section>
-</main><script type="module" src="app.js"></script>
+</main><script type="module" src="app.js?v=5"></script>
 </body></html>

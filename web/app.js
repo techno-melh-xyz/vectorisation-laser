@@ -5,6 +5,7 @@ const ctx = canvas.getContext('2d', {willReadFrequently:true});
 let ready = false, loaded = false, svgText = '';
 const cleanedImage = $('cleaned');
 const overlay = $('cropOverlay');
+const cropStage = $('cropStage');
 const overlayCtx = overlay.getContext('2d');
 const sourceCanvas = document.createElement('canvas');
 const sourceCtx = sourceCanvas.getContext('2d');
@@ -32,16 +33,16 @@ $('cropMode').addEventListener('change',()=>{
   $('cropInfo').textContent=$('cropMode').checked ? 'Dessinez un rectangle sur l’image d’origine, dans le panneau de gauche.' : 'Activez la sélection pour recadrer l’image.';
   if(!$('cropMode').checked){selection=null;drawSelection();$('applyCrop').disabled=true;}
 });
-overlay.addEventListener('pointerdown',e=>{
+cropStage.addEventListener('pointerdown',e=>{
   if(!loaded || !$('cropMode').checked)return;
   dragging=true;dragStart=pointerCoords(e);selection=null;
-  overlay.setPointerCapture(e.pointerId);drawSelection();e.preventDefault();
+  cropStage.setPointerCapture(e.pointerId);drawSelection();e.preventDefault();
 });
-overlay.addEventListener('pointermove',e=>{
+cropStage.addEventListener('pointermove',e=>{
   if(!dragging)return;
   const p=pointerCoords(e);
   selection={x:Math.min(dragStart.x,p.x),y:Math.min(dragStart.y,p.y),w:Math.abs(p.x-dragStart.x),h:Math.abs(p.y-dragStart.y)};
-  drawSelection();
+  drawSelection(); e.preventDefault();
 });
 function finishSelection(e){
   if(!dragging)return;
@@ -53,8 +54,8 @@ function finishSelection(e){
   if(selection) $('cropMode').checked=true;
   $('cropInfo').textContent=selection?`Sélection : ${selection.w} × ${selection.h} px. Cliquez sur « Appliquer le recadrage ».`:'Sélection trop petite : tracez un rectangle plus grand.';
 }
-overlay.addEventListener('pointerup',finishSelection);
-overlay.addEventListener('pointercancel',()=>{dragging=false;selection=null;drawSelection();$('applyCrop').disabled=true;});
+cropStage.addEventListener('pointerup',finishSelection);
+cropStage.addEventListener('pointercancel',()=>{dragging=false;selection=null;drawSelection();$('applyCrop').disabled=true;});
 function renderCrop(){
   const r=currentCrop || {x:0,y:0,w:sourceCanvas.width,h:sourceCanvas.height};
   canvas.width=r.w;canvas.height=r.h;

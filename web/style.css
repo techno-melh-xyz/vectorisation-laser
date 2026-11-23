@@ -13,3 +13,10 @@
 .crop-controls{display:block;margin:14px 0 0}.crop-controls .mode{margin:0 0 10px}.crop-buttons{display:flex;flex-wrap:wrap;gap:8px}.crop-controls #cropInfo{display:block;margin:10px 0 0;line-height:1.4}
 .crop-help{font-size:.82rem;color:#52657a;margin:0 0 10px;line-height:1.4}
 .crop-stage.selecting{outline:3px solid #1363a5;outline-offset:-3px}
+
+/* V5 : les interactions sont capturées par le conteneur, pas le calque canvas. */
+.crop-stage{position:relative!important;display:block!important;width:100%!important;touch-action:none}
+.crop-stage #original{display:block!important;width:100%!important;height:auto!important;max-width:none!important;max-height:none!important;pointer-events:none}
+.crop-stage #cropOverlay{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;display:block!important;pointer-events:none!important;z-index:3}
+.crop-stage.selecting{cursor:crosshair!important;touch-action:none}
+.crop-controls{margin-top:14px}
