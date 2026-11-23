@@ -1,6 +1,662 @@
-import init from './pkg/vectorisation_laser.js';
-import { vectorizeCut, vectorizeCenterline, vectorizeDoubleContours } from './trace-modes.js';
-import { createCurveEditor } from './curve-editor.js';
+/* Vectorisation Laser V10.1 — application autonome sans dépendance WASM au démarrage.
+   Les trois modes utilisent les algorithmes JS inclus ci-dessous.
+   Les modules séparés restent dans le dépôt pour les tests. */
+const {parsePathData,pathData,clonePaths,smoothPath,smoothNode,makeCorner,reducePathNodes} = (() => {
+/* Géométrie des courbes pour l'éditeur SVG. Pas de dépendance externe. */
+const fmt = n => Number((Number.isFinite(n) ? n : 0).toFixed(2)).toString();
+const pos = (x,y) => ({x:Number(x), y:Number(y)});
+const copy = p => p ? pos(p.x,p.y) : null;
+function clonePaths(paths) {
+  return paths.map(path=>({closed:path.closed,nodes:path.nodes.map(n=>({x:n.x,y:n.y,in:copy(n.in),out:copy(n.out)}))}));
+}
+
+// Nos vectoriseurs émettent M/L/Z. Le parseur accepte aussi H/V/C/Q/S
+// afin de pouvoir recharger les courbes cubiques après édition.
+function parsePathData(d) {
+  const tokens=(d.match(/[a-zA-Z]|[+-]?(?:\d*\.\d+|\d+\.?\d*)(?:[eE][+-]?\d+)?/g)||[]);
+  let i=0,cmd='',x=0,y=0,start=null,lastQuad=null,closed=false;
+  const nodes=[];
+  const isCommand=t=>/^[A-Za-z]$/.test(t||'');
+  const get=()=>{if(i>=tokens.length||isCommand(tokens[i]))throw Error('Données SVG incomplètes');return Number(tokens[i++]);};
+  const point=(xx,yy)=>{x=xx;y=yy;nodes.push({x,y,in:null,out:null});};
+  while(i<tokens.length){
+    if(isCommand(tokens[i])){cmd=tokens[i++];if(cmd.toUpperCase()==='Z'){closed=true;if(start){x=start.x;y=start.y;}cmd='';continue;}}
+    if(!cmd)throw Error('Commande SVG manquante');
+    const rel=cmd===cmd.toLowerCase(),type=cmd.toUpperCase();
+    if(type==='M'){
+      const nx=get(),ny=get();point(nx+(rel?x:0),ny+(rel?y:0));start={x,y};
+      cmd=rel?'l':'L';lastQuad=null;
+    } else if(type==='L'){
+      const nx=get(),ny=get();point(nx+(rel?x:0),ny+(rel?y:0));lastQuad=null;
+    } else if(type==='H'){
+      const nx=get();point(nx+(rel?x:0),y);lastQuad=null;
+    } else if(type==='V'){
+      const ny=get();point(x,ny+(rel?y:0));lastQuad=null;
+    } else if(type==='C'){
+      const bx=x,by=y;
+      const c1=pos(get(),get()),c2=pos(get(),get()),p=pos(get(),get());
+      if(rel){for(const v of [c1,c2,p]){v.x+=bx;v.y+=by;}}
+      if(nodes.length)nodes.at(-1).out=c1;
+      point(p.x,p.y);nodes.at(-1).in=c2;lastQuad=null;
+    } else if(type==='Q'){
+      const bx=x,by=y,q=pos(get(),get()),p=pos(get(),get());
+      if(rel){q.x+=bx;q.y+=by;p.x+=bx;p.y+=by;}
+      if(nodes.length)nodes.at(-1).out=pos(bx+(q.x-bx)*2/3,by+(q.y-by)*2/3);
+      point(p.x,p.y);nodes.at(-1).in=pos(p.x+(q.x-p.x)*2/3,p.y+(q.y-p.y)*2/3);
+      lastQuad=q;
+    } else if(type==='S'){
+      const bx=x,by=y,c2=pos(get(),get()),p=pos(get(),get());
+      if(rel){c2.x+=bx;c2.y+=by;p.x+=bx;p.y+=by;}
+      const prev=nodes.at(-1);
+      if(prev)prev.out=prev.in?pos(2*bx-prev.in.x,2*by-prev.in.y):pos(bx,by);
+      point(p.x,p.y);nodes.at(-1).in=c2;lastQuad=null;
+    } else if(type==='T'){
+      const bx=x,by=y,p=pos(get(),get());
+      if(rel){p.x+=bx;p.y+=by;}
+      const q=lastQuad?pos(2*bx-lastQuad.x,2*by-lastQuad.y):pos(bx,by);
+      if(nodes.length)nodes.at(-1).out=pos(bx+(q.x-bx)*2/3,by+(q.y-by)*2/3);
+      point(p.x,p.y);nodes.at(-1).in=pos(p.x+(q.x-p.x)*2/3,p.y+(q.y-p.y)*2/3);lastQuad=q;
+    } else {
+      throw Error(`Commande ${type} non prise en charge par cet éditeur`);
+    }
+  }
+  if(nodes.length<2)throw Error('Chemin trop court');
+  return {nodes,closed};
+}
+function pathData(path) {
+  const n=path.nodes;
+  if(n.length<2)return '';
+  let d=`M ${fmt(n[0].x)} ${fmt(n[0].y)}`;
+  const segment=(from,to)=>{
+    if(from.out||to.in){
+      const a=from.out||pos(from.x+(to.x-from.x)/3,from.y+(to.y-from.y)/3);
+      const b=to.in||pos(from.x+2*(to.x-from.x)/3,from.y+2*(to.y-from.y)/3);
+      return ` C ${fmt(a.x)} ${fmt(a.y)} ${fmt(b.x)} ${fmt(b.y)} ${fmt(to.x)} ${fmt(to.y)}`;
+    }
+    return ` L ${fmt(to.x)} ${fmt(to.y)}`;
+  };
+  for(let i=1;i<n.length;i++)d+=segment(n[i-1],n[i]);
+  if(path.closed){
+    if(n.at(-1).out||n[0].in)d+=segment(n.at(-1),n[0]);
+    d+=' Z';
+  }
+  return d;
+}
+const distance=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
+const unit=(dx,dy)=>{const len=Math.hypot(dx,dy);return len>1e-7?{x:dx/len,y:dy/len}:pos(0,0);};
+function handlesForNode(nodes,i,closed,intensity,protectCorners){
+  const n=nodes.length,p=nodes[i];
+  const prev=i>0?nodes[i-1]:(closed?nodes[n-1]:null);
+  const next=i+1<n?nodes[i+1]:(closed?nodes[0]:null);
+  if(!prev&&!next)return {in:null,out:null};
+  if(!prev){
+    const u=unit(next.x-p.x,next.y-p.y);
+    return {in:null,out:pos(p.x+u.x*distance(next,p)*intensity/3,p.y+u.y*distance(next,p)*intensity/3)};
+  }
+  if(!next){
+    const u=unit(p.x-prev.x,p.y-prev.y);
+    return {in:pos(p.x-u.x*distance(prev,p)*intensity/3,p.y-u.y*distance(prev,p)*intensity/3),out:null};
+  }
+  const v1=unit(prev.x-p.x,prev.y-p.y),v2=unit(next.x-p.x,next.y-p.y);
+  const cos=Math.max(-1,Math.min(1,v1.x*v2.x+v1.y*v2.y));
+  const angle=Math.acos(cos)*180/Math.PI;
+  if(protectCorners&&angle<118)return {in:null,out:null};
+  const u=unit(v2.x-v1.x,v2.y-v1.y);
+  const inLen=distance(prev,p)*intensity/3;
+  const outLen=distance(next,p)*intensity/3;
+  return {in:pos(p.x-u.x*inLen,p.y-u.y*inLen),out:pos(p.x+u.x*outLen,p.y+u.y*outLen)};
+}
+function smoothNode(path,index,intensity=0.8){
+  if(index<0||index>=path.nodes.length)return false;
+  const h=handlesForNode(path.nodes,index,path.closed,intensity,false);
+  path.nodes[index].in=h.in;path.nodes[index].out=h.out;
+  return true;
+}
+function makeCorner(path,index){
+  if(index<0||index>=path.nodes.length)return false;
+  path.nodes[index].in=null;path.nodes[index].out=null;
+  return true;
+}
+function smoothPath(path,intensity=0.8){
+  const nodes=path.nodes;
+  const hs=nodes.map((_,i)=>handlesForNode(nodes,i,path.closed,intensity,true));
+  nodes.forEach((node,i)=>{node.in=hs[i].in;node.out=hs[i].out;});
+  return path;
+}
+function pointToSegment2(p,a,b){
+  const dx=b.x-a.x,dy=b.y-a.y,den=dx*dx+dy*dy;
+  if(!den)return (p.x-a.x)**2+(p.y-a.y)**2;
+  const t=Math.max(0,Math.min(1,((p.x-a.x)*dx+(p.y-a.y)*dy)/den));
+  return (p.x-a.x-t*dx)**2+(p.y-a.y-t*dy)**2;
+}
+function rdpOpen(points,tol){
+  if(points.length<=2)return points;
+  const keep=new Uint8Array(points.length);keep[0]=keep[points.length-1]=1;
+  const stack=[[0,points.length-1]],limit=tol*tol;
+  while(stack.length){
+    const [start,end]=stack.pop();let best=limit,idx=-1;
+    for(let i=start+1;i<end;i++){
+      const d=pointToSegment2(points[i],points[start],points[end]);
+      if(d>best){best=d;idx=i;}
+    }
+    if(idx>=0){keep[idx]=1;stack.push([start,idx],[idx,end]);}
+  }
+  return points.filter((_,i)=>keep[i]);
+}
+function reducePathNodes(path,tolerance=2){
+  const points=path.nodes;
+  if(points.length<4)return path;
+  let result;
+  if(!path.closed){result=rdpOpen(points,tolerance);}
+  else {
+    const p0=points[0];let far=1,max=0;
+    for(let i=1;i<points.length;i++){
+      const d=(p0.x-points[i].x)**2+(p0.y-points[i].y)**2;
+      if(d>max){max=d;far=i;}
+    }
+    const a=rdpOpen(points.slice(0,far+1),tolerance);
+    const b=rdpOpen([...points.slice(far),points[0]],tolerance);
+    result=[...a,...b.slice(1,-1)];
+  }
+  if(result.length<(path.closed?3:2))return path;
+  path.nodes=result.map(n=>({x:n.x,y:n.y,in:null,out:null}));
+  return path;
+}
+
+return {parsePathData, pathData, clonePaths, smoothPath, smoothNode, makeCorner, reducePathNodes};
+})();
+const {vectorizeCut,vectorizeCenterline,vectorizeDoubleContours} = (() => {
+/* Vectorisation Laser V9 — algorithms developed for this application.
+ * No code imported from KizamuBeam. SVG coordinates are in source-image pixels.
+ * Output is intentionally unfilled, with explicit M/L/Z commands.
+ */
+const OFFSETS = [
+  [-1,-1],[0,-1],[1,-1],[-1,0],[1,0],[-1,1],[0,1],[1,1]
+];
+const opposite = i => 7 - i;
+const F = number => Number(number.toFixed(2)).toString();
+
+function toBinaryMask(rgba, width, height) {
+  const mask = new Uint8Array(width * height);
+  for (let i = 0; i < mask.length; i++) mask[i] = rgba[i * 4] < 128 ? 1 : 0;
+  return mask;
+}
+function makeSvg(paths, width, height) {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><g fill="none" stroke="#000000" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">${paths.join('')}</g></svg>`;
+}
+function sqDist(p, a, b) {
+  const dx = b.x-a.x, dy = b.y-a.y;
+  const den=dx*dx+dy*dy;
+  if (den === 0) return (p.x-a.x)**2 + (p.y-a.y)**2;
+  const t=Math.max(0,Math.min(1,((p.x-a.x)*dx+(p.y-a.y)*dy)/den));
+  return (p.x-a.x-t*dx)**2+(p.y-a.y-t*dy)**2;
+}
+function simplifyOpen(pts, epsilon) {
+  if (pts.length <= 2 || epsilon <= 0) return pts;
+  const keep = new Uint8Array(pts.length);
+  keep[0]=keep[pts.length-1]=1;
+  const stack=[[0,pts.length-1]];
+  const maxSquare=epsilon*epsilon;
+  while (stack.length) {
+    const [start,end]=stack.pop();
+    let best=maxSquare, at=-1;
+    for (let i=start+1;i<end;i++) {
+      const d=sqDist(pts[i],pts[start],pts[end]);
+      if(d>best){best=d;at=i;}
+    }
+    if(at>=0){keep[at]=1;stack.push([start,at],[at,end]);}
+  }
+  return pts.filter((_,i)=>keep[i]);
+}
+function simplifyClosed(points, epsilon) {
+  if(points.length<4)return points;
+  const first=points[0];
+  let far=1, farDist=0;
+  for(let i=1;i<points.length;i++){
+    const d=(points[i].x-first.x)**2+(points[i].y-first.y)**2;
+    if(d>farDist){farDist=d;far=i;}
+  }
+  if(far===0||far===points.length-1)return points;
+  const firstHalf=simplifyOpen(points.slice(0,far+1),epsilon);
+  const secondHalf=simplifyOpen([...points.slice(far),points[0]],epsilon);
+  const joined=[...firstHalf,...secondHalf.slice(1,-1)];
+  return joined.length>=3?joined:points;
+}
+function pathD(points, closed) {
+  if(points.length<2)return null;
+  const cmds=[`M ${F(points[0].x)} ${F(points[0].y)}`];
+  for(let i=1;i<points.length;i++)cmds.push(`L ${F(points[i].x)} ${F(points[i].y)}`);
+  if(closed)cmds.push('Z');
+  return cmds.join(' ');
+}
+
+// 4-connected flood fill of WHITE pixels, beginning at the picture border.
+// White pixels that cannot reach the border are the interior of closed drawn figures.
+function findEnclosedWhite(mask, w, h, minArea) {
+  const n=w*h, seen=new Uint8Array(n), queue=new Int32Array(n);
+  let head=0,tail=0;
+  const add = idx => {if(!mask[idx]&&!seen[idx]){seen[idx]=1;queue[tail++]=idx;}};
+  for(let x=0;x<w;x++){add(x);add((h-1)*w+x);}
+  for(let y=0;y<h;y++){add(y*w);add(y*w+w-1);}
+  while(head<tail){
+    const p=queue[head++],x=p%w,y=(p/w)|0;
+    if(x>0)add(p-1);if(x<w-1)add(p+1);
+    if(y>0)add(p-w);if(y<h-1)add(p+w);
+  }
+  const regions=[];
+  for(let p=0;p<n;p++){
+    if(mask[p]||seen[p])continue;
+    head=tail=0;seen[p]=1;queue[tail++]=p;
+    while(head<tail){
+      const v=queue[head++],x=v%w,y=(v/w)|0;
+      if(x>0)add(v-1);if(x<w-1)add(v+1);
+      if(y>0)add(v-w);if(y<h-1)add(v+w);
+    }
+    if(tail>=minArea)regions.push(Array.from(queue.subarray(0,tail)));
+  }
+  return regions;
+}
+
+// Fallback for solid black figures; only used when no enclosed white region exists.
+function findBlackShapes(mask,w,h,minArea){
+  const n=w*h,seen=new Uint8Array(n),queue=new Int32Array(n),regions=[];
+  for(let i=0;i<n;i++){
+    if(!mask[i]||seen[i])continue;
+    let head=0,tail=0;queue[tail++]=i;seen[i]=1;
+    while(head<tail){
+      const p=queue[head++],x=p%w,y=(p/w)|0;
+      if(x>0&&mask[p-1]&&!seen[p-1]){seen[p-1]=1;queue[tail++]=p-1;}
+      if(x<w-1&&mask[p+1]&&!seen[p+1]){seen[p+1]=1;queue[tail++]=p+1;}
+      if(y>0&&mask[p-w]&&!seen[p-w]){seen[p-w]=1;queue[tail++]=p-w;}
+      if(y<h-1&&mask[p+w]&&!seen[p+w]){seen[p+w]=1;queue[tail++]=p+w;}
+    }
+    if(tail>=minArea)regions.push(Array.from(queue.subarray(0,tail)));
+  }
+  return regions;
+}
+
+// Trace one or more closed contours of a pixel region using oriented grid edges.
+function regionContours(region,w,h,maskWorkspace){
+  const stride=w+1, edges=[],startingAt=new Map();
+  for(const p of region)maskWorkspace[p]=1;
+  const edge=(x1,y1,x2,y2)=>{
+    const from=y1*stride+x1,to=y2*stride+x2;
+    const i=edges.length;edges.push({from,to,used:false});
+    if(!startingAt.has(from))startingAt.set(from,[]);
+    startingAt.get(from).push(i);
+  };
+  for(const p of region){
+    const x=p%w,y=(p/w)|0;
+    if(y===0||!maskWorkspace[p-w])edge(x,y,x+1,y);
+    if(x===w-1||!maskWorkspace[p+1])edge(x+1,y,x+1,y+1);
+    if(y===h-1||!maskWorkspace[p+w])edge(x+1,y+1,x,y+1);
+    if(x===0||!maskWorkspace[p-1])edge(x,y+1,x,y);
+  }
+  const loops=[];
+  for(let e=0;e<edges.length;e++){
+    if(edges[e].used)continue;
+    const initial=edges[e].from,points=[];
+    let current=e,done=false;
+    for(let k=0;k<=edges.length;k++){
+      const seg=edges[current];if(seg.used)break;seg.used=true;
+      points.push({x:seg.from%stride,y:(seg.from/stride)|0});
+      if(seg.to===initial){done=true;break;}
+      const next=(startingAt.get(seg.to)||[]).find(i=>!edges[i].used);
+      if(next===undefined)break;
+      current=next;
+    }
+    if(done && points.length>=4)loops.push(points);
+  }
+  for(const p of region)maskWorkspace[p]=0;
+  return loops;
+}
+
+function vectorizeCut(rgba,w,h,simplify=0.5){
+  if(w<3||h<3)throw Error('Image trop petite.');
+  const binary=toBinaryMask(rgba,w,h), minArea=Math.max(50,Math.round(w*h*0.0001));
+  let regions=findEnclosedWhite(binary,w,h,minArea);
+  const silhouetteFallback=regions.length===0;
+  if(silhouetteFallback)regions=findBlackShapes(binary,w,h,minArea);
+  if(!regions.length)throw Error('Aucune forme exploitable : recadrez et vérifiez le nettoyage.');
+  const regionMask=new Uint8Array(w*h),paths=[];
+  let contourCount=0;
+  for(const region of regions){
+    const loops=regionContours(region,w,h,regionMask);
+    // In fallback mode, don't cut both edges of outline strokes:
+    // only emit the largest exterior contour for each black component.
+    const selected=silhouetteFallback ? loops.sort((a,b)=>b.length-a.length).slice(0,1) : loops;
+    for(const points of selected){
+      const reduced=simplifyClosed(points,Math.max(0,Number(simplify)*2.5));
+      if(reduced.length<3)continue;
+      const d=pathD(reduced,true);
+      if(d){paths.push(`<path d="${d}"/>`);contourCount++;}
+    }
+  }
+  if(!paths.length)throw Error('Aucun contour fermé trouvé. Vérifiez la fermeture du dessin.');
+  return {
+    svg:makeSvg(paths,w,h),
+    paths:contourCount,
+    closed:contourCount,
+    open:0,
+    warning:silhouetteFallback?'Aucune zone blanche intérieure fermée : contour extérieur des surfaces noires utilisé. Attention, vérifiez les doubles découpes et les coupures.':''
+  };
+}
+
+// Zhang–Suen thinning, two alternating topology-preserving erosion phases.
+function thinBinary(binary,w,h){
+  const skel=new Uint8Array(binary), n=w*h;
+  const marked=new Int32Array(n);
+  let nChanged=1,iteration=0;
+  while(nChanged && iteration++<90){
+    nChanged=0;
+    for(let pass=0;pass<2;pass++){
+      let count=0;
+      for(let y=1;y<h-1;y++){
+        for(let x=1;x<w-1;x++){
+          const i=y*w+x;if(!skel[i])continue;
+          const a=skel[i-w],b=skel[i-w+1],c=skel[i+1],d=skel[i+w+1];
+          const e=skel[i+w],f=skel[i+w-1],g=skel[i-1],j=skel[i-w-1];
+          const neighbors=a+b+c+d+e+f+g+j;
+          if(neighbors<2||neighbors>6)continue;
+          const transitions=(!a&&b)+(!b&&c)+(!c&&d)+(!d&&e)+(!e&&f)+(!f&&g)+(!g&&j)+(!j&&a);
+          if(transitions!==1)continue;
+          if(pass===0){if(a*c*e||c*e*g)continue;}
+          else {if(a*c*g||a*e*g)continue;}
+          marked[count++]=i;
+        }
+      }
+      for(let k=0;k<count;k++)skel[marked[k]]=0;
+      nChanged+=count;
+    }
+  }
+  return skel;
+}
+
+function buildSkeletonPaths(skel,w,h){
+  const n=w*h,all=[];
+  for(let i=0;i<n;i++)if(skel[i])all.push(i);
+  const visit=new Uint8Array(n),degree=new Uint8Array(n);
+  function neighbors(p){
+    const x=p%w,y=(p/w)|0, out=[];
+    for(let d=0;d<8;d++){
+      const [dx,dy]=OFFSETS[d],xx=x+dx,yy=y+dy;
+      if(xx<0||xx>=w||yy<0||yy>=h)continue;
+      const next=yy*w+xx;if(!skel[next])continue;
+      // Remove triangles in 8-neighbour graphs at elbow corners.
+      if(dx&&dy&&(skel[y*w+xx]||skel[yy*w+x]))continue;
+      out.push({p:next,d});
+    }
+    return out;
+  }
+  for(const p of all)degree[p]=neighbors(p).length;
+  function take(start,edge){
+    const chain=[start];let curr=start,e=edge,closed=false;
+    for(let steps=0;steps<=all.length;steps++){
+      const next=e.p;
+      visit[curr]|=1<<e.d;visit[next]|=1<<opposite(e.d);
+      chain.push(next);
+      if(next===start){closed=true;break;}
+      if(degree[next]!==2)break;
+      const options=neighbors(next).filter(v=>!(visit[next]&(1<<v.d)));
+      if(!options.length)break;
+      curr=next;e=options[0];
+    }
+    return {chain,closed};
+  }
+  const paths=[];
+  for(const p of all){
+    if(degree[p]===2||degree[p]===0)continue;
+    for(const e of neighbors(p))if(!(visit[p]&(1<<e.d)))paths.push(take(p,e));
+  }
+  for(const p of all){
+    for(const e of neighbors(p))if(!(visit[p]&(1<<e.d)))paths.push(take(p,e));
+  }
+  return paths;
+}
+
+function vectorizeCenterline(rgba,w,h,simplify=0.5){
+  if(w<3||h<3)throw Error('Image trop petite.');
+  const skel=thinBinary(toBinaryMask(rgba,w,h),w,h);
+  const traced=buildSkeletonPaths(skel,w,h),paths=[];
+  let closed=0,open=0,ignored=0;
+  const tol=Math.max(0,Number(simplify)*1.2);
+  for(const trace of traced){
+    const points=trace.chain.map(i=>({x:(i%w)+0.5,y:((i/w)|0)+0.5}));
+    if(points.length<3){ignored++;continue;}
+    // Ignore very short isolated branches, not long engraved outlines.
+    if(!trace.closed && points.length<5){ignored++;continue;}
+    const reduced=trace.closed ? simplifyClosed(points.slice(0,-1),tol) : simplifyOpen(points,tol);
+    const d=pathD(reduced,trace.closed);
+    if(!d)continue;
+    paths.push(`<path d="${d}"/>`);
+    if(trace.closed)closed++;else open++;
+  }
+  if(!paths.length)throw Error('Aucune ligne centrale détectée après nettoyage.');
+  return {
+    svg:makeSvg(paths,w,h),paths:paths.length,closed,open,ignored,
+    warning:open?'Les lignes ouvertes conviennent à la gravure, mais pas à une découpe de formes fermées.':''
+  };
+}
+
+
+// Troisième mode : trace les deux bords de chaque bande d'encre.
+// En suivant les surfaces noires, on obtient à la fois le contour extérieur
+// et le contour intérieur du trait épais (ainsi que d'éventuels trous).
+function vectorizeDoubleContours(rgba,w,h,simplify=0.5){
+  if(w<3||h<3)throw Error('Image trop petite.');
+  const black=toBinaryMask(rgba,w,h);
+  const minArea=Math.max(18,Math.round(w*h*0.00002));
+  const regions=findBlackShapes(black,w,h,minArea);
+  if(!regions.length)throw Error('Aucun trait noir exploitable après nettoyage.');
+  const regionMask=new Uint8Array(w*h),paths=[];
+  let loopsCount=0;
+  for(const region of regions){
+    // Conserver toutes les boucles des composantes noires : contrairement au
+    // mode découpe, on ne supprime PAS le bord intérieur des traits.
+    for(const loop of regionContours(region,w,h,regionMask)){
+      const pts=simplifyClosed(loop,Math.max(0,Number(simplify)*2.5));
+      if(pts.length<3)continue;
+      const d=pathD(pts,true);
+      if(d){paths.push(`<path d="${d}"/>`);loopsCount++;}
+    }
+  }
+  if(!paths.length)throw Error('Aucun contour double détecté.');
+  return {
+    svg:makeSvg(paths,w,h),paths:loopsCount,closed:loopsCount,open:0,
+    warning:'Les deux côtés des traits sont vectorisés : attention aux doubles passages du laser en mode découpe.'
+  };
+}
+
+return {vectorizeCut, vectorizeCenterline, vectorizeDoubleContours};
+})();
+const {createCurveEditor} = (() => {
+
+
+const NS='http://www.w3.org/2000/svg';
+const el=(tag,attributes={})=>{
+  const e=document.createElementNS(NS,tag);
+  for(const [k,v] of Object.entries(attributes))e.setAttribute(k,String(v));
+  return e;
+};
+const coord=(e,svg)=>{
+  const m=svg?.getScreenCTM();
+  if(!m)return null;
+  const p=new DOMPoint(e.clientX,e.clientY).matrixTransform(m.inverse());
+  return {x:p.x,y:p.y};
+};
+
+function createCurveEditor({stage,getSvg,onCommit,onState,onMessage,getIntensity,isLinked}){
+  let enabled=false,paths=[],sourceNodes=[],overlay=null;
+  let selected=-1,selectedNode=-1,drag=null,history=[],original=null;
+
+  function state(){
+    onState({enabled,selected,node:selectedNode,undo:history.length>0,
+      nodeCount:selected>=0?paths[selected].nodes.length:0,pathCount:paths.length});
+  }
+  function before(){history.push(clonePaths(paths));if(history.length>35)history.shift();}
+  function svgScale(){
+    const m=getSvg()?.getScreenCTM();
+    return m?Math.max(.00001,Math.hypot(m.a,m.b)):1;
+  }
+  function setSourcePaths(){
+    const svg=getSvg();if(!svg)return false;
+    sourceNodes=Array.from(svg.querySelectorAll('path')).filter(e=>!e.closest('.curve-editor-overlay'));
+    try {paths=sourceNodes.map(node=>parsePathData(node.getAttribute('d')||''));}
+    catch(err){onMessage('Impossible d’éditer ce chemin SVG : '+err.message);return false;}
+    original=clonePaths(paths);history=[];selected=-1;selectedNode=-1;
+    return paths.length>0;
+  }
+  function render(){
+    if(!enabled)return;
+    const svg=getSvg();if(!svg)return;
+    if(overlay)overlay.remove();
+    overlay=el('g',{'class':'curve-editor-overlay'});
+    const scale=svgScale(), width=Math.max(.1,14/scale),r=Math.max(.15,5/scale);
+    paths.forEach((model,i)=>{
+      if(i===selected){
+        overlay.append(el('path',{d:pathData(model),class:'curve-editor-highlight',
+          'stroke-width':Math.max(.1,2.5/scale),'vector-effect':'non-scaling-stroke'}));
+      }
+      overlay.append(el('path',{d:pathData(model),class:'curve-editor-hit',
+        'stroke-width':width,'data-edit-kind':'path','data-path':i}));
+    });
+    if(selected>=0){
+      const nodes=paths[selected].nodes;
+      const step=Math.max(1,Math.ceil(nodes.length/220));
+      nodes.forEach((n,i)=>{
+        if(i%step!==0 && i!==selectedNode)return;
+        if(i===selectedNode){
+          for(const type of ['in','out'])if(n[type]){
+            overlay.append(el('line',{x1:n.x,y1:n.y,x2:n[type].x,y2:n[type].y,
+              class:'curve-editor-tangent','stroke-width':Math.max(.1,1/scale)}));
+            overlay.append(el('circle',{cx:n[type].x,cy:n[type].y,r:r*.9,
+              class:'curve-editor-handle','data-edit-kind':type,'data-node':i}));
+          }
+        }
+        overlay.append(el('circle',{cx:n.x,cy:n.y,r:i===selectedNode?r*1.2:r,
+          class:i===selectedNode?'curve-editor-node is-selected':'curve-editor-node',
+          'data-edit-kind':'node','data-node':i}));
+      });
+    }
+    svg.append(overlay);
+    state();
+  }
+  function sync(commit=true){
+    sourceNodes.forEach((node,i)=>node.setAttribute('d',pathData(paths[i])));
+    if(commit)onCommit(paths.map(pathData));
+    render();
+  }
+  function selectPath(i){
+    if(i<0||i>=paths.length)return;
+    selected=i;selectedNode=-1;render();
+  }
+  function enable(next){
+    if(enabled===next)return enabled;
+    if(next){if(!setSourcePaths()){onMessage('Aucun chemin éditable dans cet aperçu.');return false;}}
+    enabled=next;
+    if(!next){drag=null;overlay?.remove();overlay=null;}
+    else render();
+    state();
+    return enabled;
+  }
+  function pointerDown(e){
+    if(!enabled||e.button!==0)return false;
+    const t=e.target.closest?.('[data-edit-kind]');
+    if(!t)return false;
+    const kind=t.dataset.editKind;
+    if(kind==='path'){
+      selectPath(Number(t.dataset.path));
+      return true;
+    }
+    if(selected<0)return false;
+    const index=Number(t.dataset.node);
+    if(!Number.isInteger(index)||index<0||index>=paths[selected].nodes.length)return false;
+    selectedNode=index;
+    const start=coord(e,getSvg());if(!start)return false;
+    before();
+    drag={id:e.pointerId,kind,index,start,initial:clonePaths(paths),moved:false};
+    stage.setPointerCapture(e.pointerId);render();state();return true;
+  }
+  function pointerMove(e){
+    if(!drag||!enabled||drag.id!==e.pointerId)return false;
+    const p=coord(e,getSvg());if(!p)return true;
+    const delta={x:p.x-drag.start.x,y:p.y-drag.start.y};
+    if(Math.abs(delta.x)+Math.abs(delta.y)>0.001)drag.moved=true;
+    const initial=drag.initial[selected].nodes[drag.index];
+    const node=paths[selected].nodes[drag.index];
+    if(drag.kind==='node'){
+      node.x=initial.x+delta.x;node.y=initial.y+delta.y;
+      node.in=initial.in?{x:initial.in.x+delta.x,y:initial.in.y+delta.y}:null;
+      node.out=initial.out?{x:initial.out.x+delta.x,y:initial.out.y+delta.y}:null;
+    }else {
+      node[drag.kind]={x:initial[drag.kind].x+delta.x,y:initial[drag.kind].y+delta.y};
+      if(isLinked()){
+        const opposite=drag.kind==='in'?'out':'in';
+        node[opposite]={x:2*node.x-node[drag.kind].x,y:2*node.y-node[drag.kind].y};
+      }
+    }
+    sync(false);return true;
+  }
+  function pointerUp(e){
+    if(!drag||drag.id!==e.pointerId)return false;
+    if(stage.hasPointerCapture(e.pointerId))stage.releasePointerCapture(e.pointerId);
+    const changed=drag.moved;drag=null;
+    if(changed)sync(true);
+    else {history.pop();render();}
+    return true;
+  }
+  function action(fn,message){
+    if(!enabled||selected<0)return;
+    before();fn(paths[selected]);selectedNode=-1;sync(true);
+    if(message)onMessage(message);
+  }
+  function smoothSelected(){
+    action(path=>smoothPath(path,getIntensity()),'Courbes de Bézier créées. Les pointes marquées sont conservées.');
+  }
+  function reduceSelected(){
+    action(path=>{
+      reducePathNodes(path,Math.max(.3,getIntensity()*5));
+      smoothPath(path,getIntensity());
+    },'Points rapprochés simplifiés, puis courbes de Bézier lissées.');
+  }
+  function smoothSelectedNode(){
+    if(selectedNode<0)return;
+    const i=selectedNode;
+    before();smoothNode(paths[selected],i,getIntensity());sync(true);
+    onMessage('Nœud lissé : les poignées de Bézier sont visibles et déplaçables.');
+  }
+  function cornerSelectedNode(){
+    if(selectedNode<0)return;
+    const i=selectedNode;
+    before();makeCorner(paths[selected],i);sync(true);
+    onMessage('Nœud transformé en angle.');
+  }
+  function deleteSelectedNode(){
+    if(selectedNode<0)return;
+    const path=paths[selected];
+    if(path.nodes.length<=(path.closed?3:2)){onMessage('Pas assez de nœuds pour supprimer ce point.');return;}
+    before();path.nodes.splice(selectedNode,1);selectedNode=-1;sync(true);
+    onMessage('Nœud supprimé.');
+  }
+  function undo(){
+    if(!enabled||!history.length)return;
+    paths=history.pop();selectedNode=-1;
+    if(selected>=paths.length)selected=paths.length-1;
+    sync(true);
+    onMessage('Dernière modification annulée.');
+  }
+  function reset(){
+    if(!enabled||!original)return;
+    before();paths=clonePaths(original);selectedNode=-1;sync(true);
+    onMessage('Courbes rétablies à leur état avant l’édition.');
+  }
+  function close(){enable(false);paths=[];sourceNodes=[];history=[];original=null;}
+  return {enable,close,refresh:render,pointerDown,pointerMove,pointerUp,
+    smoothSelected,reduceSelected,smoothSelectedNode,cornerSelectedNode,deleteSelectedNode,undo,reset};
+}
+
+return {createCurveEditor};
+})();
 const $ = id => document.getElementById(id);
 $('threshold').value = '128'; $('contrast').value = '100'; $('simplify').value = '0.5';
 $('thresholdVal').textContent = '128'; $('contrastVal').textContent = '100 %'; $('simplifyVal').textContent = '0.50';
@@ -471,5 +1127,6 @@ function downloadSvg(){
 }
 $('download').addEventListener('click',downloadSvg);
 $('downloadEdited').addEventListener('click',downloadSvg);
-try{await init();ready=true;status('Application prête : trois modes de vectorisation et édition des courbes dans Agrandir / Zoom.');}catch(err){ready=true;status('WASM VTracer indisponible : les trois modes de vectorisation JavaScript restent opérationnels.');}
+ready=true;
+status('Application prête : 3 modes de vectorisation et éditeur Bézier opérationnels (traitement local).');
 updateButtons();
