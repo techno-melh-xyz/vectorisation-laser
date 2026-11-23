@@ -4,6 +4,75 @@ const canvas = $('original');
 const ctx = canvas.getContext('2d', {willReadFrequently:true});
 let ready = false, loaded = false, svgText = '';
 const cleanedImage = $('cleaned');
+const overlay = $('cropOverlay');
+const overlayCtx = overlay.getContext('2d');
+const sourceCanvas = document.createElement('canvas');
+const sourceCtx = sourceCanvas.getContext('2d');
+let selection = null, dragging = false, dragStart = null;
+let currentCrop = null;
+function clearOutput(){invalidate();cleanedImage.removeAttribute('src');$('diagnostic').textContent='Aucune image traitée.';}
+function syncOverlay(){overlay.width=canvas.width;overlay.height=canvas.height;drawSelection();}
+function drawSelection(){
+  overlayCtx.clearRect(0,0,overlay.width,overlay.height);
+  if(!selection)return;
+  const {x,y,w,h}=selection;
+  overlayCtx.fillStyle='rgba(19,99,165,.18)';overlayCtx.fillRect(x,y,w,h);
+  overlayCtx.strokeStyle='#0b61a4';overlayCtx.lineWidth=Math.max(2,canvas.width/600);
+  overlayCtx.setLineDash([Math.max(5,canvas.width/150),Math.max(3,canvas.width/300)]);
+  overlayCtx.strokeRect(x,y,w,h);overlayCtx.setLineDash([]);
+}
+function pointerCoords(e){
+  const rect=overlay.getBoundingClientRect();
+  return {x:Math.max(0,Math.min(canvas.width,(e.clientX-rect.left)*canvas.width/rect.width)),y:Math.max(0,Math.min(canvas.height,(e.clientY-rect.top)*canvas.height/rect.height))};
+}
+$('cropMode').addEventListener('change',()=>{
+  $('cropStage').classList.toggle('selecting',$('cropMode').checked && loaded);
+  if(!$('cropMode').checked){selection=null;drawSelection();$('applyCrop').disabled=true;}
+});
+overlay.addEventListener('pointerdown',e=>{
+  if(!loaded || !$('cropMode').checked)return;
+  dragging=true;dragStart=pointerCoords(e);selection=null;
+  overlay.setPointerCapture(e.pointerId);e.preventDefault();
+});
+overlay.addEventListener('pointermove',e=>{
+  if(!dragging)return;
+  const p=pointerCoords(e);
+  selection={x:Math.min(dragStart.x,p.x),y:Math.min(dragStart.y,p.y),w:Math.abs(p.x-dragStart.x),h:Math.abs(p.y-dragStart.y)};
+  drawSelection();
+});
+function finishSelection(e){
+  if(!dragging)return;
+  dragging=false;
+  const p=pointerCoords(e);
+  selection={x:Math.round(Math.min(dragStart.x,p.x)),y:Math.round(Math.min(dragStart.y,p.y)),w:Math.round(Math.abs(p.x-dragStart.x)),h:Math.round(Math.abs(p.y-dragStart.y))};
+  if(selection.w<8 || selection.h<8)selection=null;
+  drawSelection();$('applyCrop').disabled=!selection;
+  $('cropInfo').textContent=selection?`Sélection : ${selection.w} × ${selection.h} px. Cliquez sur « Appliquer le recadrage ».`:'Sélection trop petite : tracez un rectangle plus grand.';
+}
+overlay.addEventListener('pointerup',finishSelection);
+overlay.addEventListener('pointercancel',()=>{dragging=false;selection=null;drawSelection();$('applyCrop').disabled=true;});
+function renderCrop(){
+  const r=currentCrop || {x:0,y:0,w:sourceCanvas.width,h:sourceCanvas.height};
+  canvas.width=r.w;canvas.height=r.h;
+  ctx.drawImage(sourceCanvas,r.x,r.y,r.w,r.h,0,0,r.w,r.h);
+  selection=null;syncOverlay();$('applyCrop').disabled=true;
+  $('resetCrop').disabled=!currentCrop;
+  $('cropStage').classList.toggle('selecting',$('cropMode').checked && loaded);
+  clearOutput();updateButtons();
+}
+$('applyCrop').addEventListener('click',()=>{
+  if(!selection || !loaded)return;
+  // La sélection est exprimée dans les coordonnées de l'image affichée.
+  const r=currentCrop || {x:0,y:0,w:sourceCanvas.width,h:sourceCanvas.height};
+  currentCrop={x:r.x+selection.x,y:r.y+selection.y,w:Math.min(selection.w,r.w-selection.x),h:Math.min(selection.h,r.h-selection.y)};
+  $('cropMode').checked=false;renderCrop();
+  $('cropInfo').textContent=`Image recadrée : ${canvas.width} × ${canvas.height} px. Vous pouvez recadrer à nouveau ou rétablir l’image entière.`;
+  status('Recadrage appliqué. Cliquez sur Vectoriser pour traiter uniquement cette zone.');
+});
+$('resetCrop').addEventListener('click',()=>{
+  currentCrop=null;$('cropMode').checked=false;renderCrop();
+  $('cropInfo').textContent='Image entière rétablie.';status('Image entière rétablie.');
+});
 function invalidate(){svgText='';$('result').replaceChildren();updateButtons();}
 $('adaptive').addEventListener('change',invalidate);
 const status = message => $('status').textContent = message;
@@ -13,15 +82,15 @@ for (const [id, format] of [['threshold',v=>v],['contrast',v=>v+' %'],['simplify
 }
 $('file').addEventListener('change', async e => {
   const file = e.target.files?.[0]; if (!file) return;
-  loaded = false; invalidate(); cleanedImage.removeAttribute('src');
+  loaded = false; clearOutput(); selection=null;currentCrop=null;$('cropMode').checked=false;$('applyCrop').disabled=true;$('resetCrop').disabled=true;
   try {
     const bitmap = await createImageBitmap(file);
     const scale = Math.min(1, 2400 / Math.max(bitmap.width, bitmap.height));
-    canvas.width = Math.max(1,Math.round(bitmap.width*scale));
-    canvas.height = Math.max(1,Math.round(bitmap.height*scale));
-    ctx.fillStyle='#fff'; ctx.fillRect(0,0,canvas.width,canvas.height);
-    ctx.drawImage(bitmap,0,0,canvas.width,canvas.height); bitmap.close();
-    loaded=true; status(`Image prête (${canvas.width} × ${canvas.height} px).`); updateButtons();
+    sourceCanvas.width = Math.max(1,Math.round(bitmap.width*scale));
+    sourceCanvas.height = Math.max(1,Math.round(bitmap.height*scale));
+    sourceCtx.fillStyle='#fff'; sourceCtx.fillRect(0,0,sourceCanvas.width,sourceCanvas.height);
+    sourceCtx.drawImage(bitmap,0,0,sourceCanvas.width,sourceCanvas.height); bitmap.close();
+    loaded=true; renderCrop();$('cropInfo').textContent='Cochez la sélection, puis tracez un rectangle directement sur l’image.'; status(`Image prête (${canvas.width} × ${canvas.height} px).`); updateButtons();
   } catch(err) {status('Impossible de lire cette image : '+err.message);}
 });
 $('trace').addEventListener('click', async () => {
