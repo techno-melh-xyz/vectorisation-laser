@@ -20,7 +20,7 @@ pub fn vectorize_rgba(pixels: &[u8], width: u32, height: u32, simplify: f64) -> 
     cfg.length_threshold = 3.5;
     cfg.corner_threshold = 55;
     cfg.splice_threshold = 45;
-    cfg.path_precision = 2;
+    cfg.path_precision = Some(2);
     cfg.simplify = if simplify > 0.0 { Some(simplify) } else { None };
 
     cfg.build()
